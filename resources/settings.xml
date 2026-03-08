@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+    <category label="Účet / Account">
+        <setting id="username" type="text" label="Používateľské meno / Username" default=""/>
+        <setting id="password" type="text" option="hidden" label="Heslo / Password" default=""/>
+    </category>
+</settings>
