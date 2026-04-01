@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <settings>
-    <category label="Účet / Account">
-        <setting id="username" type="text" label="Používateľské meno / Username" default=""/>
-        <setting id="password" type="text" option="hidden" label="Heslo / Password" default=""/>
+    <category label="Webshare.cz účet">
+        <setting id="username" type="text" label="Používateľské meno" default=""/>
+        <setting id="password" type="text" option="hidden" label="Heslo" default=""/>
+    </category>
+    <category label="TMDB">
+        <setting id="tmdb_api_key" type="text" label="TMDB API kľúč" default=""/>
+        <setting id="tmdb_language" type="labelenum" label="Jazyk metadát" values="cs-CZ|sk-SK|en-US" default="cs-CZ"/>
     </category>
 </settings>

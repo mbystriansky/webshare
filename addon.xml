@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.webshare"
        name="Webshare.cz"
-       version="1.0.0"
+       version="2.0.0"
        provider-name="webshare">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -11,10 +11,10 @@
         <provides>video</provides>
     </extension>
     <extension point="xbmc.addon.metadata">
-        <summary lang="sk">Webshare.cz video plugin</summary>
-        <summary lang="en">Webshare.cz video plugin</summary>
-        <description lang="sk">Vyhľadávajte a prehrávajte videá z webshare.cz</description>
-        <description lang="en">Search and play videos from webshare.cz</description>
+        <summary lang="sk">Filmy a seriály z TMDB + Webshare.cz</summary>
+        <summary lang="en">Movies and TV shows from TMDB + Webshare.cz</summary>
+        <description lang="sk">Prehľadávajte katalóg filmov a seriálov z TMDB a streamujte z Webshare.cz. Trending, novinky, žánre, vyhľadávanie a viac.</description>
+        <description lang="en">Browse movies and TV shows from TMDB and stream from Webshare.cz. Trending, new releases, genres, search and more.</description>
         <platform>all</platform>
         <license>MIT</license>
     </extension>
