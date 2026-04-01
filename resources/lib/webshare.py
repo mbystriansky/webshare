@@ -115,10 +115,13 @@ class WebshareAPI:
         Returns:
             Direct link URL string.
         """
+        import uuid
+        device_uuid = str(uuid.uuid4())
         xml = self._post('file_link', {
             'ident': ident,
             'wst': self.token,
             'download_type': download_type,
+            'device_uuid': device_uuid,
             'force_https': 1,
         })
         self._check_status(xml, 'FileLink')

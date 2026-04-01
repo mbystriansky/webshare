@@ -220,9 +220,10 @@ def _build_search_queries(title, year='', season=None, episode=None):
 
 
 def search_webshare_for_title(title, year='', season=None, episode=None):
-    """Search webshare for a movie/episode title and show stream selection."""
+    """Search webshare for a movie/episode title and list results as directory."""
     ws = get_webshare()
     if ws is None:
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
     queries = _build_search_queries(title, year, season, episode)
@@ -243,16 +244,31 @@ def search_webshare_for_title(title, year='', season=None, episode=None):
 
     if not all_results:
         xbmcgui.Dialog().ok('Webshare.cz', 'Žiadne výsledky pre: {}'.format(title))
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
-    # Let user pick a stream
-    labels = ['{} [{}]'.format(r['name'], r['size_str']) for r in all_results]
-    idx = xbmcgui.Dialog().select('Vyber kvalitu / súbor', labels)
-    if idx < 0:
-        return
+    xbmcplugin.setContent(HANDLE, 'videos')
+    for r in all_results:
+        label = '{} [{}]'.format(r['name'], r['size_str'])
+        li = xbmcgui.ListItem(label)
+        li.setInfo('video', {'title': r['name']})
+        li.setProperty('IsPlayable', 'true')
+        if r['img']:
+            li.setArt({'thumb': r['img'], 'icon': r['img']})
+        url = build_url('play', ident=r['ident'], name=r['name'])
+        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
 
-    chosen = all_results[idx]
-    _play_direct(chosen['ident'], chosen['name'])
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def _add_stream_headers(link):
+    """Append HTTP headers to a streaming URL for Kodi (pipe syntax)."""
+    headers = (
+        'User-Agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        '&Referer=https://webshare.cz/'
+    )
+    return '{}|{}'.format(link, headers)
 
 
 def _play_direct(ident, name=''):
@@ -266,22 +282,26 @@ def _play_direct(ident, name=''):
     except WebshareAPIError as e:
         xbmcgui.Dialog().ok('Webshare.cz - Chyba', str(e))
         return
-    li = xbmcgui.ListItem(name or 'Video', path=link)
-    xbmc.Player().play(link, li)
+    stream_url = _add_stream_headers(link)
+    li = xbmcgui.ListItem(name or 'Video', path=stream_url)
+    xbmc.Player().play(stream_url, li)
 
 
 def play_webshare(ident, name=''):
     """Resolve and play a webshare file (for IsPlayable items via setResolvedUrl)."""
     ws = get_webshare()
     if ws is None:
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
     try:
         link = ws.get_file_link(ident)
     except WebshareAPIError as e:
         xbmcgui.Dialog().ok('Webshare.cz - Chyba', str(e))
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
 
-    li = xbmcgui.ListItem(name or 'Video', path=link)
+    stream_url = _add_stream_headers(link)
+    li = xbmcgui.ListItem(name or 'Video', path=stream_url)
     xbmcplugin.setResolvedUrl(HANDLE, True, li)
 
 
@@ -612,6 +632,8 @@ def search_input():
     if query:
         add_to_history(query)
         do_search(query)
+    else:
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
 
 
 def do_search(query, page=1):
@@ -651,6 +673,8 @@ def ws_search_input():
     query = xbmcgui.Dialog().input('Hľadať na Webshare.cz')
     if query:
         do_ws_search(query)
+    else:
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
 
 
 def do_ws_search(query, offset=0):
