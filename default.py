@@ -252,11 +252,26 @@ def search_webshare_for_title(title, year='', season=None, episode=None):
         return
 
     chosen = all_results[idx]
-    play_webshare(chosen['ident'], chosen['name'])
+    _play_direct(chosen['ident'], chosen['name'])
+
+
+def _play_direct(ident, name=''):
+    """Resolve webshare link and play directly via xbmc.Player (for dialog flows)."""
+    import xbmc
+    ws = get_webshare()
+    if ws is None:
+        return
+    try:
+        link = ws.get_file_link(ident)
+    except WebshareAPIError as e:
+        xbmcgui.Dialog().ok('Webshare.cz - Chyba', str(e))
+        return
+    li = xbmcgui.ListItem(name or 'Video', path=link)
+    xbmc.Player().play(link, li)
 
 
 def play_webshare(ident, name=''):
-    """Resolve and play a webshare file."""
+    """Resolve and play a webshare file (for IsPlayable items via setResolvedUrl)."""
     ws = get_webshare()
     if ws is None:
         return
