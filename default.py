@@ -35,19 +35,51 @@ _tmdb = None
 # Singletons
 # ---------------------------------------------------------------------------
 
+def _read_api_key_from_file():
+    """Try to read TMDB API key from a text file.
+
+    Checks these locations (first found wins):
+      1. <addon_profile>/tmdb_api_key.txt
+      2. <addon_dir>/tmdb_api_key.txt
+      3. /sdcard/tmdb_api_key.txt  (handy on Android)
+    """
+    locations = [
+        os.path.join(PROFILE_DIR, 'tmdb_api_key.txt'),
+        os.path.join(
+            xbmcvfs.translatePath(ADDON.getAddonInfo('path')),
+            'tmdb_api_key.txt'),
+        '/sdcard/tmdb_api_key.txt',
+    ]
+    for path in locations:
+        if os.path.isfile(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    key = f.read().strip()
+                if key:
+                    return key
+            except OSError:
+                pass
+    return ''
+
+
 def get_tmdb():
     global _tmdb
     if _tmdb is not None:
         return _tmdb
-    api_key = ADDON.getSetting('tmdb_api_key')
+
+    # 1) settings  2) file on disk
+    api_key = ADDON.getSetting('tmdb_api_key') or _read_api_key_from_file()
+
     if not api_key:
         xbmcgui.Dialog().ok(
             'Webshare.cz',
-            'Zadajte TMDB API kľúč v nastaveniach doplnku.\n'
-            'Získate ho zadarmo na themoviedb.org.'
+            'Zadajte TMDB API kľúč v nastaveniach doplnku,\n'
+            'alebo ho uložte do súboru tmdb_api_key.txt\n'
+            '(napr. /sdcard/tmdb_api_key.txt na Androide).\n\n'
+            'Kľúč získate zadarmo na themoviedb.org.'
         )
         ADDON.openSettings()
-        api_key = ADDON.getSetting('tmdb_api_key')
+        api_key = ADDON.getSetting('tmdb_api_key') or _read_api_key_from_file()
         if not api_key:
             return None
     lang = ADDON.getSetting('tmdb_language') or 'cs-CZ'
