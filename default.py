@@ -499,14 +499,14 @@ def show_movie_detail(tmdb_id, title, year):
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
 
     url = build_url('ws_search_title', title=play_title, year=play_year)
-    xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
+    xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
     # Also search by original title if different
     if original and original.lower() != play_title.lower():
         li2 = xbmcgui.ListItem('Hľadať originálny názov: {}'.format(original))
         li2.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
         url2 = build_url('ws_search_title', title=original, year=play_year)
-        xbmcplugin.addDirectoryItem(HANDLE, url2, li2, isFolder=False)
+        xbmcplugin.addDirectoryItem(HANDLE, url2, li2, isFolder=True)
 
     xbmcplugin.endOfDirectory(HANDLE)
 
@@ -556,7 +556,7 @@ def show_tv_detail(tmdb_id, title, year):
     li = xbmcgui.ListItem('[B]Hľadať celý seriál na Webshare[/B]')
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
     url = build_url('ws_search_title', title=series_title, year=year)
-    xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
+    xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
     xbmcplugin.endOfDirectory(HANDLE)
 
@@ -598,7 +598,7 @@ def show_tv_season(tmdb_id, season, title, original_title=''):
         search_title = original_title or title
         url = build_url('ws_search_episode', title=search_title,
                         season=snum, episode=enum)
-        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
+        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
     xbmcplugin.endOfDirectory(HANDLE)
 
