@@ -321,6 +321,8 @@ def main_menu():
         ('Top hodnotené seriály', 'tv_top_rated', 'DefaultTVShows.png'),
         ('Žánre - filmy', 'genres_movies', 'DefaultGenre.png'),
         ('Žánre - seriály', 'genres_tv', 'DefaultGenre.png'),
+        ('Podľa roku - filmy', 'years_movies', 'DefaultYear.png'),
+        ('Podľa roku - seriály', 'years_tv', 'DefaultYear.png'),
         ('Webshare - priame hľadanie', 'ws_search_input', 'DefaultAddonsSearch.png'),
     ]
     for label, action, icon in items:
@@ -471,6 +473,58 @@ def show_genre_list(media_type, genre_id, genre_name, page=1):
     _add_page_items(data, 'genre_list',
                     {'media_type': media_type, 'genre_id': genre_id,
                      'genre_name': genre_name})
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+# ---------------------------------------------------------------------------
+# Year browsing
+# ---------------------------------------------------------------------------
+
+def show_years(media_type):
+    """Show a list of years (current year down to 1970) for browsing."""
+    import datetime
+    current_year = datetime.datetime.now().year
+    xbmcplugin.setContent(HANDLE, 'videos')
+    for year in range(current_year, 1969, -1):
+        li = xbmcgui.ListItem(str(year))
+        li.setArt({'icon': 'DefaultYear.png'})
+        url = build_url('year_list', media_type=media_type, year=year)
+        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def show_year_list(media_type, year, page=1):
+    """Show movies or TV shows from a specific year using TMDB discover."""
+    tmdb = get_tmdb()
+    if tmdb is None:
+        return
+    try:
+        if media_type == 'movie':
+            data = tmdb.discover_movies(page=int(page),
+                                        primary_release_year=int(year),
+                                        sort_by='popularity.desc')
+        else:
+            data = tmdb.discover_tv(page=int(page),
+                                    first_air_date_year=int(year),
+                                    sort_by='popularity.desc')
+    except TMDBError as e:
+        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
+        return
+
+    content = 'movies' if media_type == 'movie' else 'tvshows'
+    xbmcplugin.setContent(HANDLE, content)
+    for item in data.get('results', []):
+        if media_type == 'movie':
+            li, title, yr = _movie_listitem(item)
+            url = build_url('movie_detail', tmdb_id=item['id'],
+                            title=title, year=yr)
+        else:
+            li, title, yr = _tv_listitem(item)
+            url = build_url('tv_detail', tmdb_id=item['id'],
+                            title=title, year=yr)
+        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+    _add_page_items(data, 'year_list',
+                    {'media_type': media_type, 'year': year})
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -787,6 +841,14 @@ def router():
                         params.get('genre_id', ''),
                         params.get('genre_name', ''),
                         params.get('page', 1))
+    elif action == 'years_movies':
+        show_years('movie')
+    elif action == 'years_tv':
+        show_years('tv')
+    elif action == 'year_list':
+        show_year_list(params.get('media_type', 'movie'),
+                       params.get('year', ''),
+                       params.get('page', 1))
 
     # TMDB detail
     elif action == 'movie_detail':
