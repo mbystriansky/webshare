@@ -158,13 +158,16 @@ def _movie_listitem(item):
     """Create a ListItem from a TMDB movie dict."""
     title = item.get('title') or item.get('original_title', '')
     year = (item.get('release_date') or '')[:4]
+    rating = item.get('vote_average', 0)
     label = '{} ({})'.format(title, year) if year else title
+    if rating:
+        votes = item.get('vote_count', 0)
+        label += '  [COLOR gold]\u2605 {:.1f} ({:,})[/COLOR]'.format(rating, votes)
 
     li = xbmcgui.ListItem(label)
-    info = {'title': title, 'plot': item.get('overview', ''),
-            'year': int(year) if year.isdigit() else 0,
-            'rating': item.get('vote_average', 0)}
-    li.setInfo('video', info)
+    li.setInfo('video', {'title': label, 'plot': item.get('overview', ''),
+                         'year': int(year) if year.isdigit() else 0,
+                         'rating': rating, 'votes': item.get('vote_count', 0)})
 
     poster = TMDB.poster_url(item.get('poster_path'))
     fanart = TMDB.fanart_url(item.get('backdrop_path'))
@@ -176,18 +179,72 @@ def _tv_listitem(item):
     """Create a ListItem from a TMDB tv dict."""
     title = item.get('name') or item.get('original_name', '')
     year = (item.get('first_air_date') or '')[:4]
+    rating = item.get('vote_average', 0)
     label = '{} ({})'.format(title, year) if year else title
+    if rating:
+        votes = item.get('vote_count', 0)
+        label += '  [COLOR gold]\u2605 {:.1f} ({:,})[/COLOR]'.format(rating, votes)
 
     li = xbmcgui.ListItem(label)
-    info = {'title': title, 'plot': item.get('overview', ''),
-            'year': int(year) if year.isdigit() else 0,
-            'rating': item.get('vote_average', 0)}
-    li.setInfo('video', info)
+    li.setInfo('video', {'title': label, 'plot': item.get('overview', ''),
+                         'year': int(year) if year.isdigit() else 0,
+                         'rating': rating, 'votes': item.get('vote_count', 0)})
 
     poster = TMDB.poster_url(item.get('poster_path'))
     fanart = TMDB.fanart_url(item.get('backdrop_path'))
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
     return li, title, year
+
+
+def _enable_sort_methods():
+    """Enable sorting by title, year and rating in Kodi's view menu."""
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_TITLE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_VIDEO_YEAR)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_VIDEO_RATING)
+
+
+# TMDB discover sort options — maps UI labels to TMDB API sort_by values
+SORT_OPTIONS = [
+    ('Popularita', 'popularity.desc'),
+    ('Hodnotenie', 'vote_average.desc'),
+    ('Počet hodnotení', 'vote_count.desc'),
+    ('Rok (najnovšie)', 'primary_release_date.desc'),
+    ('Rok (najstaršie)', 'primary_release_date.asc'),
+]
+
+SORT_OPTIONS_TV = [
+    ('Popularita', 'popularity.desc'),
+    ('Hodnotenie', 'vote_average.desc'),
+    ('Počet hodnotení', 'vote_count.desc'),
+    ('Rok (najnovšie)', 'first_air_date.desc'),
+    ('Rok (najstaršie)', 'first_air_date.asc'),
+]
+
+
+def _sort_label(media_type, sort_by):
+    """Return human-readable label for a TMDB sort_by value."""
+    options = SORT_OPTIONS if media_type == 'movie' else SORT_OPTIONS_TV
+    for label, value in options:
+        if value == sort_by:
+            return label
+    return 'Popularita'
+
+
+def _pick_sort(media_type, current_sort='popularity.desc'):
+    """Show a sort selection dialog. Returns TMDB sort_by value or None if cancelled."""
+    options = SORT_OPTIONS if media_type == 'movie' else SORT_OPTIONS_TV
+    labels = [o[0] for o in options]
+    # pre-select current
+    preselect = 0
+    for i, o in enumerate(options):
+        if o[1] == current_sort:
+            preselect = i
+            break
+    idx = xbmcgui.Dialog().select('Zoradiť podľa', labels, preselect=preselect)
+    if idx < 0:
+        return None
+    return options[idx][1]
 
 
 def _add_page_items(data, action, extra_params=None):
@@ -368,6 +425,7 @@ def show_trending(page=1):
                             title=title, year=year)
             xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
     _add_page_items(data, 'trending')
+    _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -391,6 +449,7 @@ def show_movies(category, page=1):
                         title=title, year=year)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
     _add_page_items(data, 'movies_' + category)
+    _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -413,6 +472,7 @@ def show_tv(category, page=1):
                         title=title, year=year)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
     _add_page_items(data, 'tv_' + category)
+    _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -441,25 +501,36 @@ def show_genres(media_type):
     xbmcplugin.endOfDirectory(HANDLE)
 
 
-def show_genre_list(media_type, genre_id, genre_name, page=1):
+def show_genre_list(media_type, genre_id, genre_name, page=1,
+                    sort_by='popularity.desc'):
     tmdb = get_tmdb()
     if tmdb is None:
         return
+    discover_params = {'with_genres': genre_id, 'sort_by': sort_by}
+    if sort_by == 'vote_average.desc':
+        discover_params['vote_count.gte'] = 50
     try:
         if media_type == 'movie':
-            data = tmdb.discover_movies(page=int(page),
-                                        with_genres=genre_id,
-                                        sort_by='popularity.desc')
+            data = tmdb.discover_movies(page=int(page), **discover_params)
         else:
-            data = tmdb.discover_tv(page=int(page),
-                                    with_genres=genre_id,
-                                    sort_by='popularity.desc')
+            data = tmdb.discover_tv(page=int(page), **discover_params)
     except TMDBError as e:
         xbmcgui.Dialog().ok('TMDB Chyba', str(e))
         return
 
     content = 'movies' if media_type == 'movie' else 'tvshows'
     xbmcplugin.setContent(HANDLE, content)
+
+    # Sort button at the top
+    sort_li = xbmcgui.ListItem('[B]Zoradiť: {}[/B]'.format(
+        _sort_label(media_type, sort_by)))
+    sort_li.setArt({'icon': 'DefaultAddSource.png'})
+    xbmcplugin.addDirectoryItem(
+        HANDLE, build_url('genre_sort', media_type=media_type,
+                          genre_id=genre_id, genre_name=genre_name,
+                          current_sort=sort_by),
+        sort_li, isFolder=True)
+
     for item in data.get('results', []):
         if media_type == 'movie':
             li, title, year = _movie_listitem(item)
@@ -472,7 +543,8 @@ def show_genre_list(media_type, genre_id, genre_name, page=1):
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
     _add_page_items(data, 'genre_list',
                     {'media_type': media_type, 'genre_id': genre_id,
-                     'genre_name': genre_name})
+                     'genre_name': genre_name, 'sort_by': sort_by})
+    _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -493,26 +565,39 @@ def show_years(media_type):
     xbmcplugin.endOfDirectory(HANDLE)
 
 
-def show_year_list(media_type, year, page=1):
+def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
     """Show movies or TV shows from a specific year using TMDB discover."""
     tmdb = get_tmdb()
     if tmdb is None:
         return
+    discover_params = {'sort_by': sort_by}
+    if sort_by == 'vote_average.desc':
+        discover_params['vote_count.gte'] = 50
+    if media_type == 'movie':
+        discover_params['primary_release_year'] = int(year)
+    else:
+        discover_params['first_air_date_year'] = int(year)
     try:
         if media_type == 'movie':
-            data = tmdb.discover_movies(page=int(page),
-                                        primary_release_year=int(year),
-                                        sort_by='popularity.desc')
+            data = tmdb.discover_movies(page=int(page), **discover_params)
         else:
-            data = tmdb.discover_tv(page=int(page),
-                                    first_air_date_year=int(year),
-                                    sort_by='popularity.desc')
+            data = tmdb.discover_tv(page=int(page), **discover_params)
     except TMDBError as e:
         xbmcgui.Dialog().ok('TMDB Chyba', str(e))
         return
 
     content = 'movies' if media_type == 'movie' else 'tvshows'
     xbmcplugin.setContent(HANDLE, content)
+
+    # Sort button at the top
+    sort_li = xbmcgui.ListItem('[B]Zoradiť: {}[/B]'.format(
+        _sort_label(media_type, sort_by)))
+    sort_li.setArt({'icon': 'DefaultAddSource.png'})
+    xbmcplugin.addDirectoryItem(
+        HANDLE, build_url('year_sort', media_type=media_type,
+                          year=year, current_sort=sort_by),
+        sort_li, isFolder=True)
+
     for item in data.get('results', []):
         if media_type == 'movie':
             li, title, yr = _movie_listitem(item)
@@ -524,7 +609,9 @@ def show_year_list(media_type, year, page=1):
                             title=title, year=yr)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
     _add_page_items(data, 'year_list',
-                    {'media_type': media_type, 'year': year})
+                    {'media_type': media_type, 'year': year,
+                     'sort_by': sort_by})
+    _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -840,7 +927,15 @@ def router():
         show_genre_list(params.get('media_type', 'movie'),
                         params.get('genre_id', ''),
                         params.get('genre_name', ''),
-                        params.get('page', 1))
+                        params.get('page', 1),
+                        params.get('sort_by', 'popularity.desc'))
+    elif action == 'genre_sort':
+        mt = params.get('media_type', 'movie')
+        new_sort = _pick_sort(mt, params.get('current_sort', 'popularity.desc'))
+        if new_sort:
+            show_genre_list(mt, params.get('genre_id', ''),
+                            params.get('genre_name', ''),
+                            page=1, sort_by=new_sort)
     elif action == 'years_movies':
         show_years('movie')
     elif action == 'years_tv':
@@ -848,7 +943,14 @@ def router():
     elif action == 'year_list':
         show_year_list(params.get('media_type', 'movie'),
                        params.get('year', ''),
-                       params.get('page', 1))
+                       params.get('page', 1),
+                       params.get('sort_by', 'popularity.desc'))
+    elif action == 'year_sort':
+        mt = params.get('media_type', 'movie')
+        new_sort = _pick_sort(mt, params.get('current_sort', 'popularity.desc'))
+        if new_sort:
+            show_year_list(mt, params.get('year', ''),
+                           page=1, sort_by=new_sort)
 
     # TMDB detail
     elif action == 'movie_detail':
