@@ -35,7 +35,8 @@ jobs:
 
       - name: Build plugin ZIP
         run: |
-          mkdir -p staging/${PLUGIN_ID}
+          BUILD=$(mktemp -d)
+          mkdir -p "$BUILD/${PLUGIN_ID}"
           rsync -av \
             --exclude='.git' \
             --exclude='.github' \
@@ -45,21 +46,15 @@ jobs:
             --exclude='*.pyo' \
             --exclude='CLAUDE.md' \
             --exclude='.gitignore' \
-            --exclude='staging' \
-            --exclude='dist' \
             --exclude="${REPO_ID}" \
-            ./ staging/${PLUGIN_ID}/
-          mkdir -p dist/${PLUGIN_ID}
-          cd staging && zip -r ../dist/${PLUGIN_ID}/${PLUGIN_ID}-${{ steps.versions.outputs.plugin }}.zip ${PLUGIN_ID}
-          cd ..
-          cp ${PLUGIN_ID}/addon.xml dist/${PLUGIN_ID}/addon.xml
+            ./ "$BUILD/${PLUGIN_ID}/"
+          mkdir -p "dist/${PLUGIN_ID}"
+          (cd "$BUILD" && zip -r "$GITHUB_WORKSPACE/dist/${PLUGIN_ID}/${PLUGIN_ID}-${{ steps.versions.outputs.plugin }}.zip" "${PLUGIN_ID}")
 
       - name: Build repository ZIP
         run: |
-          mkdir -p dist/${REPO_ID}
-          cd ${REPO_ID}/.. && zip -r dist-tmp.zip ${REPO_ID}/addon.xml
-          mv ${REPO_ID}/../dist-tmp.zip dist/${REPO_ID}/${REPO_ID}-${{ steps.versions.outputs.repo }}.zip
-          cp ${REPO_ID}/addon.xml dist/${REPO_ID}/addon.xml
+          mkdir -p "dist/${REPO_ID}"
+          zip -r "dist/${REPO_ID}/${REPO_ID}-${{ steps.versions.outputs.repo }}.zip" "${REPO_ID}"
 
       - name: Generate addons.xml + checksum
         run: |
