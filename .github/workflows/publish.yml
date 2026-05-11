@@ -1,0 +1,108 @@
+name: Build and publish Kodi addon ZIP
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read addon version
+        id: version
+        run: |
+          VERSION=$(grep -oP 'version="\K[^"]+' addon.xml | head -1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Addon version: $VERSION"
+
+      - name: Build addon ZIP
+        run: |
+          mkdir -p build/plugin.video.webshare
+          rsync -av \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.claude' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='*.pyo' \
+            --exclude='CLAUDE.md' \
+            --exclude='.gitignore' \
+            --exclude='build' \
+            --exclude='dist' \
+            ./ build/plugin.video.webshare/
+          mkdir -p dist
+          cd build && zip -r ../dist/plugin.video.webshare-${{ steps.version.outputs.version }}.zip plugin.video.webshare
+          cp ../dist/plugin.video.webshare-${{ steps.version.outputs.version }}.zip ../dist/plugin.video.webshare.zip
+          ls -la ../dist/
+
+      - name: Generate index.html
+        run: |
+          cat > dist/index.html <<EOF
+          <!DOCTYPE html>
+          <html lang="sk">
+          <head>
+            <meta charset="utf-8">
+            <title>Webshare.cz Kodi plugin</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;
+                     max-width: 720px; margin: 3em auto; padding: 0 1em; line-height: 1.5; }
+              h1 { border-bottom: 2px solid #eee; padding-bottom: .3em; }
+              .dl { display: inline-block; padding: .7em 1.2em; background: #2563eb;
+                    color: white; text-decoration: none; border-radius: 6px; font-weight: 600; }
+              .dl:hover { background: #1d4ed8; }
+              code { background: #f3f4f6; padding: .1em .4em; border-radius: 3px; }
+              ol li { margin: .4em 0; }
+            </style>
+          </head>
+          <body>
+            <h1>Webshare.cz Kodi plugin</h1>
+            <p>Verzia <strong>${{ steps.version.outputs.version }}</strong></p>
+
+            <p>
+              <a class="dl" href="plugin.video.webshare.zip">Stiahnuť plugin (najnovšia verzia)</a>
+            </p>
+
+            <h2>Inštalácia v Kodi</h2>
+            <ol>
+              <li>Settings → System → Add-ons → povoliť <em>Unknown sources</em></li>
+              <li>Settings → File manager → Add source → vložiť: <code>https://mbystriansky.github.io/webshare/</code></li>
+              <li>Add-ons → Install from zip file → vybrať pridaný source → <code>plugin.video.webshare.zip</code></li>
+            </ol>
+
+            <h2>Archív</h2>
+            <ul>
+              <li><a href="plugin.video.webshare-${{ steps.version.outputs.version }}.zip">plugin.video.webshare-${{ steps.version.outputs.version }}.zip</a></li>
+            </ul>
+
+            <p><small><a href="https://github.com/mbystriansky/webshare">Zdrojový kód na GitHube</a></small></p>
+          </body>
+          </html>
+          EOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
