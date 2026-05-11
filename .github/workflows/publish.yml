@@ -1,4 +1,4 @@
-name: Build and publish Kodi addon ZIP
+name: Build and publish Kodi repository
 
 on:
   push:
@@ -14,22 +14,28 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+env:
+  PLUGIN_ID: plugin.video.webshare
+  REPO_ID: repository.mbystriansky
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read addon version
-        id: version
+      - name: Read addon versions
+        id: versions
         run: |
-          VERSION=$(grep -oP 'version="\K[^"]+' addon.xml | head -1)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Addon version: $VERSION"
+          PLUGIN_VERSION=$(python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('addon.xml').getroot().get('version'))")
+          REPO_VERSION=$(python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('${REPO_ID}/addon.xml').getroot().get('version'))")
+          echo "plugin=$PLUGIN_VERSION" >> "$GITHUB_OUTPUT"
+          echo "repo=$REPO_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Plugin: $PLUGIN_VERSION, Repo: $REPO_VERSION"
 
-      - name: Build addon ZIP
+      - name: Build plugin ZIP
         run: |
-          mkdir -p build/plugin.video.webshare
+          mkdir -p staging/${PLUGIN_ID}
           rsync -av \
             --exclude='.git' \
             --exclude='.github' \
@@ -39,13 +45,47 @@ jobs:
             --exclude='*.pyo' \
             --exclude='CLAUDE.md' \
             --exclude='.gitignore' \
-            --exclude='build' \
+            --exclude='staging' \
             --exclude='dist' \
-            ./ build/plugin.video.webshare/
-          mkdir -p dist
-          cd build && zip -r ../dist/plugin.video.webshare-${{ steps.version.outputs.version }}.zip plugin.video.webshare
-          cp ../dist/plugin.video.webshare-${{ steps.version.outputs.version }}.zip ../dist/plugin.video.webshare.zip
-          ls -la ../dist/
+            --exclude="${REPO_ID}" \
+            ./ staging/${PLUGIN_ID}/
+          mkdir -p dist/${PLUGIN_ID}
+          cd staging && zip -r ../dist/${PLUGIN_ID}/${PLUGIN_ID}-${{ steps.versions.outputs.plugin }}.zip ${PLUGIN_ID}
+          cd ..
+          cp ${PLUGIN_ID}/addon.xml dist/${PLUGIN_ID}/addon.xml
+
+      - name: Build repository ZIP
+        run: |
+          mkdir -p dist/${REPO_ID}
+          cd ${REPO_ID}/.. && zip -r dist-tmp.zip ${REPO_ID}/addon.xml
+          mv ${REPO_ID}/../dist-tmp.zip dist/${REPO_ID}/${REPO_ID}-${{ steps.versions.outputs.repo }}.zip
+          cp ${REPO_ID}/addon.xml dist/${REPO_ID}/addon.xml
+
+      - name: Generate addons.xml + checksum
+        run: |
+          python3 <<'PYEOF'
+          import xml.etree.ElementTree as ET
+          import hashlib
+          import os
+          plugin_id = os.environ['PLUGIN_ID']
+          repo_id = os.environ['REPO_ID']
+          out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', '<addons>']
+          for addon_dir, path in [(plugin_id, 'addon.xml'), (repo_id, f'{repo_id}/addon.xml')]:
+              with open(path, 'r', encoding='utf-8') as f:
+                  content = f.read()
+              # Strip XML declaration to embed inside <addons>
+              if content.startswith('<?xml'):
+                  content = content.split('?>', 1)[1].lstrip()
+              out.append(content.rstrip())
+          out.append('</addons>')
+          xml = '\n'.join(out)
+          with open('dist/addons.xml', 'w', encoding='utf-8') as f:
+              f.write(xml)
+          md5 = hashlib.md5(xml.encode('utf-8')).hexdigest()
+          with open('dist/addons.xml.md5', 'w', encoding='utf-8') as f:
+              f.write(md5)
+          print('addons.xml generated, md5:', md5)
+          PYEOF
 
       - name: Generate index.html
         run: |
@@ -54,42 +94,61 @@ jobs:
           <html lang="sk">
           <head>
             <meta charset="utf-8">
-            <title>Webshare.cz Kodi plugin</title>
+            <title>mbystriansky Kodi Repository</title>
             <style>
               body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;
-                     max-width: 720px; margin: 3em auto; padding: 0 1em; line-height: 1.5; }
+                     max-width: 760px; margin: 3em auto; padding: 0 1em; line-height: 1.55; color: #1f2937; }
               h1 { border-bottom: 2px solid #eee; padding-bottom: .3em; }
+              h2 { margin-top: 2em; }
               .dl { display: inline-block; padding: .7em 1.2em; background: #2563eb;
                     color: white; text-decoration: none; border-radius: 6px; font-weight: 600; }
               .dl:hover { background: #1d4ed8; }
-              code { background: #f3f4f6; padding: .1em .4em; border-radius: 3px; }
-              ol li { margin: .4em 0; }
+              code { background: #f3f4f6; padding: .15em .4em; border-radius: 3px; font-size: .9em; }
+              ol li { margin: .5em 0; }
+              .note { background: #fef3c7; border-left: 3px solid #f59e0b; padding: .8em 1em; border-radius: 4px; }
             </style>
           </head>
           <body>
-            <h1>Webshare.cz Kodi plugin</h1>
-            <p>Verzia <strong>${{ steps.version.outputs.version }}</strong></p>
+            <h1>mbystriansky Kodi Repository</h1>
+            <p>Repozitár Kodi addonov s automatickými aktualizáciami.</p>
 
+            <h2>Inštalácia (raz)</h2>
             <p>
-              <a class="dl" href="plugin.video.webshare.zip">Stiahnuť plugin (najnovšia verzia)</a>
+              <a class="dl" href="${REPO_ID}/${REPO_ID}-${{ steps.versions.outputs.repo }}.zip">
+                Stiahnuť repository (${REPO_ID} v${{ steps.versions.outputs.repo }})
+              </a>
             </p>
-
-            <h2>Inštalácia v Kodi</h2>
             <ol>
-              <li>Settings → System → Add-ons → povoliť <em>Unknown sources</em></li>
-              <li>Settings → File manager → Add source → vložiť: <code>https://mbystriansky.github.io/webshare/</code></li>
-              <li>Add-ons → Install from zip file → vybrať pridaný source → <code>plugin.video.webshare.zip</code></li>
+              <li>Stiahni ZIP vyššie</li>
+              <li>V Kodi: <strong>Settings → System → Add-ons</strong> → zapni <em>Unknown sources</em></li>
+              <li><strong>Add-ons → Install from zip file</strong> → vyber stiahnutý ZIP</li>
+              <li><strong>Install from repository → mbystriansky Repository → Video add-ons → Webshare.cz → Install</strong></li>
             </ol>
+            <div class="note">
+              Po inštalácii repository bude Kodi <strong>automaticky aktualizovať</strong> plugin pri každom novom buildi.
+            </div>
 
-            <h2>Archív</h2>
+            <h2>Obsah repozitára</h2>
             <ul>
-              <li><a href="plugin.video.webshare-${{ steps.version.outputs.version }}.zip">plugin.video.webshare-${{ steps.version.outputs.version }}.zip</a></li>
+              <li><strong>Webshare.cz</strong> — v${{ steps.versions.outputs.plugin }}
+                (<a href="${PLUGIN_ID}/${PLUGIN_ID}-${{ steps.versions.outputs.plugin }}.zip">priamy ZIP</a>)</li>
+              <li><strong>${REPO_ID}</strong> — v${{ steps.versions.outputs.repo }}
+                (<a href="${REPO_ID}/${REPO_ID}-${{ steps.versions.outputs.repo }}.zip">priamy ZIP</a>)</li>
             </ul>
+
+            <h2>Manifest</h2>
+            <p>
+              <a href="addons.xml">addons.xml</a> |
+              <a href="addons.xml.md5">addons.xml.md5</a>
+            </p>
 
             <p><small><a href="https://github.com/mbystriansky/webshare">Zdrojový kód na GitHube</a></small></p>
           </body>
           </html>
           EOF
+
+      - name: List dist contents
+        run: find dist -type f | sort
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
