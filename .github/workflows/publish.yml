@@ -82,8 +82,9 @@ jobs:
           print('addons.xml generated, md5:', md5)
           PYEOF
 
-      - name: Generate index.html
+      - name: Generate index.html files
         run: |
+          # Root index.html — user-facing landing page
           cat > dist/index.html <<EOF
           <!DOCTYPE html>
           <html lang="sk">
@@ -95,10 +96,8 @@ jobs:
                      max-width: 760px; margin: 3em auto; padding: 0 1em; line-height: 1.55; color: #1f2937; }
               h1 { border-bottom: 2px solid #eee; padding-bottom: .3em; }
               h2 { margin-top: 2em; }
-              .dl { display: inline-block; padding: .7em 1.2em; background: #2563eb;
-                    color: white; text-decoration: none; border-radius: 6px; font-weight: 600; }
-              .dl:hover { background: #1d4ed8; }
               code { background: #f3f4f6; padding: .15em .4em; border-radius: 3px; font-size: .9em; }
+              .url { display: block; background: #f3f4f6; padding: .6em 1em; border-radius: 4px; font-family: monospace; word-break: break-all; margin: .5em 0; }
               ol li { margin: .5em 0; }
               .note { background: #fef3c7; border-left: 3px solid #f59e0b; padding: .8em 1em; border-radius: 4px; }
             </style>
@@ -107,16 +106,13 @@ jobs:
             <h1>mbystriansky Kodi Repository</h1>
             <p>Repozitár Kodi addonov s automatickými aktualizáciami.</p>
 
-            <h2>Inštalácia (raz)</h2>
-            <p>
-              <a class="dl" href="${REPO_ID}/${REPO_ID}-${{ steps.versions.outputs.repo }}.zip">
-                Stiahnuť repository (${REPO_ID} v${{ steps.versions.outputs.repo }})
-              </a>
-            </p>
+            <h2>Inštalácia priamo z URL v Kodi</h2>
             <ol>
-              <li>Stiahni ZIP vyššie</li>
-              <li>V Kodi: <strong>Settings → System → Add-ons</strong> → zapni <em>Unknown sources</em></li>
-              <li><strong>Add-ons → Install from zip file</strong> → vyber stiahnutý ZIP</li>
+              <li><strong>Settings → System → Add-ons</strong> → zapni <em>Unknown sources</em></li>
+              <li><strong>Settings → File manager → Add source</strong> → vlož URL:
+                <span class="url">https://mbystriansky.github.io/webshare/</span>
+                Pomenuj zdroj napr. <code>mbystriansky</code></li>
+              <li><strong>Add-ons → Install from zip file → mbystriansky → ${REPO_ID} → ${REPO_ID}-${{ steps.versions.outputs.repo }}.zip</strong></li>
               <li><strong>Install from repository → mbystriansky Repository → Video add-ons → Webshare.cz → Install</strong></li>
             </ol>
             <div class="note">
@@ -125,10 +121,8 @@ jobs:
 
             <h2>Obsah repozitára</h2>
             <ul>
-              <li><strong>Webshare.cz</strong> — v${{ steps.versions.outputs.plugin }}
-                (<a href="${PLUGIN_ID}/${PLUGIN_ID}-${{ steps.versions.outputs.plugin }}.zip">priamy ZIP</a>)</li>
-              <li><strong>${REPO_ID}</strong> — v${{ steps.versions.outputs.repo }}
-                (<a href="${REPO_ID}/${REPO_ID}-${{ steps.versions.outputs.repo }}.zip">priamy ZIP</a>)</li>
+              <li><a href="${PLUGIN_ID}/">${PLUGIN_ID}/</a> — Webshare.cz v${{ steps.versions.outputs.plugin }}</li>
+              <li><a href="${REPO_ID}/">${REPO_ID}/</a> — Repository v${{ steps.versions.outputs.repo }}</li>
             </ul>
 
             <h2>Manifest</h2>
@@ -141,6 +135,23 @@ jobs:
           </body>
           </html>
           EOF
+
+          # Per-subfolder index.html — simple Kodi-parseable listing
+          for dir in "${PLUGIN_ID}" "${REPO_ID}"; do
+            cat > "dist/${dir}/index.html" <<HTMLEOF
+          <!DOCTYPE html>
+          <html><head><meta charset="utf-8"><title>Index of /${dir}/</title></head>
+          <body>
+          <h1>Index of /${dir}/</h1>
+          <hr><pre>
+          <a href="../">../</a>
+          HTMLEOF
+            # Add each ZIP as a link (filename only — relative to this folder)
+            (cd "dist/${dir}" && for f in *.zip; do
+              [ -f "$f" ] && echo "<a href=\"$f\">$f</a>" >> "index.html"
+            done)
+            echo "</pre><hr></body></html>" >> "dist/${dir}/index.html"
+          done
 
       - name: List dist contents
         run: find dist -type f | sort
