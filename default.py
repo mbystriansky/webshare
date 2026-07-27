@@ -7,6 +7,7 @@ import re
 import sys
 from urllib.parse import parse_qsl, urlencode, quote_plus
 
+import xbmc
 import xbmcaddon
 import xbmcgui
 import xbmcplugin
@@ -494,7 +495,6 @@ def _add_stream_headers(link):
 
 def _play_direct(ident, name=''):
     """Resolve webshare link and play directly via xbmc.Player (for dialog flows)."""
-    import xbmc
     ws = get_webshare()
     if ws is None:
         return
@@ -529,19 +529,15 @@ def play_webshare(ident, name=''):
 def play_pick(title, original_title='', year='', season=None, episode=None):
     """Search webshare, let the user pick a file in a dialog and play it.
 
-    Reached both from the info dialog's Play button (Kodi waits for
-    setResolvedUrl) and from context menus via RunPlugin (no handle).
+    Only ever runs without a plugin handle. Opening modal dialogs while Kodi
+    waits for setResolvedUrl crashes it on Android, so the info dialog's Play
+    button routes here through _handoff_play_pick instead.
     """
-    def abort():
-        if HANDLE >= 0:
-            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
-
     progress = xbmcgui.DialogProgressBG()
     progress.create('Webshare.cz', 'Hľadám súbory: {}'.format(title))
     try:
         results = _ws_collect_results(title, year, season, episode)
         if results is None:
-            abort()
             return
         if not results and original_title \
                 and original_title.lower() != title.lower():
@@ -555,20 +551,28 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
     if not results:
         xbmcgui.Dialog().ok('Webshare.cz',
                             'Žiadne výsledky pre: {}'.format(title))
-        abort()
         return
 
     labels = ['{} [{}]'.format(r['name'], r['size_str']) for r in results]
     idx = xbmcgui.Dialog().select('Vyber súbor: {}'.format(title), labels)
     if idx < 0:
-        abort()
         return
 
-    ident, name = results[idx]['ident'], results[idx]['name']
-    if HANDLE >= 0:
-        play_webshare(ident, name)
-    else:
-        _play_direct(ident, name)
+    _play_direct(results[idx]['ident'], results[idx]['name'])
+
+
+def _handoff_play_pick(params):
+    """Answer Kodi's pending resolve, then run the picker free of it.
+
+    The info dialog's Play button makes Kodi wait for setResolvedUrl. Doing
+    the search and showing a select dialog inside that wait crashes Kodi on
+    Android, so tell Kodi there is nothing to resolve and re-enter through
+    RunPlugin, which is the same route the context menu uses.
+    """
+    xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+    keys = ('title', 'original_title', 'year', 'season', 'episode')
+    args = {k: params[k] for k in keys if params.get(k)}
+    xbmc.executebuiltin('RunPlugin({})'.format(build_url('play_pick', **args)))
 
 
 # ---------------------------------------------------------------------------
@@ -1282,10 +1286,13 @@ def router():
     elif action == 'play':
         play_webshare(params.get('ident', ''), params.get('name', ''))
     elif action == 'play_pick':
-        play_pick(params.get('title', ''),
-                  params.get('original_title', ''),
-                  params.get('year', ''),
-                  params.get('season'), params.get('episode'))
+        if HANDLE >= 0:
+            _handoff_play_pick(params)
+        else:
+            play_pick(params.get('title', ''),
+                      params.get('original_title', ''),
+                      params.get('year', ''),
+                      params.get('season'), params.get('episode'))
 
     # History
     elif action == 'history':
