@@ -827,11 +827,11 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
 # Movie / TV detail
 # ---------------------------------------------------------------------------
 
-def _save_stream_list(key, title, results, info, art, cast_):
-    """Remember everything an info screen collected about one title.
+def _save_stream_list(key, title, query, info, art, cast_):
+    """Remember what an info screen knows, for its Browse button to use.
 
-    Its Browse button then opens the file list straight from here, with no
-    second search and nothing to wait for.
+    Only what TMDB gave us and what to search Webshare for — the search
+    itself waits until Browse is actually pressed.
     """
     try:
         with open(STREAMS_CACHE_FILE, 'r', encoding='utf-8') as f:
@@ -842,7 +842,7 @@ def _save_stream_list(key, title, results, info, art, cast_):
         store = {}
 
     store.pop(key, None)
-    store[key] = {'title': title, 'results': results, 'info': info,
+    store[key] = {'title': title, 'query': query, 'info': info,
                   'art': art, 'cast': cast_}
     for old in list(store)[:len(store) - STREAMS_CACHE_MAX]:
         del store[old]
@@ -891,22 +891,6 @@ def _quiet(fn, *args):
         return None
 
 
-def _detail_with_files(fetch_detail, title, year='', season=None, episode=None):
-    """Fetch TMDB detail and search Webshare at the same time.
-
-    Both take about a second, so overlapping them roughly halves the wait
-    before the info screen appears.
-    """
-    get_tmdb()      # warm both clients here: they may want to open settings,
-    get_webshare()  # which must not happen on a worker thread
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        detail = pool.submit(_quiet, fetch_detail)
-        files = pool.submit(_quiet, _ws_collect_results,
-                            title, year, season, episode)
-        return detail.result() or {}, files.result() or []
-
-
 def _info_listitem(label, browse_url, info, art, cast_):
     """An item whose info screen offers Browse instead of Play.
 
@@ -924,15 +908,6 @@ def _info_listitem(label, browse_url, info, art, cast_):
     if art:
         li.setArt(art)
     return li
-
-
-def _show_info(li, results, title):
-    """Open Kodi's info screen, warning first when there is nothing to play."""
-    if not results:
-        xbmcgui.Dialog().notification(
-            'Webshare.cz', 'Žiadne súbory pre: {}'.format(title),
-            xbmcgui.NOTIFICATION_INFO)
-    xbmcgui.Dialog().info(li)
 
 
 def _render_stream_list(results, info, art, cast_):
@@ -964,20 +939,40 @@ def _render_stream_list(results, info, art, cast_):
 
 
 def show_stream_list(key):
-    """The files an info screen collected — its Browse button lands here.
+    """Search Webshare for a title's files — an info screen's Browse lands here.
 
-    Everything was stored when the info screen opened, so this opens at once
-    and touches no network.
+    The search waits until now so that merely looking at an info screen costs
+    nothing. This is a directory listing, so Kodi is waiting on us and no
+    dialog of ours may open here; searching, however, is exactly what Kodi
+    expects a listing to spend its time on.
     """
     entry = _load_stream_list(key)
-    results = entry.get('results') or []
-    if not results:
+    query = entry.get('query') or {}
+    if not query:
+        # Only reachable from an info screen, which always stores this first,
+        # so getting here means a stale bookmark or an evicted entry.
         xbmcgui.Dialog().notification(
-            'Webshare.cz',
-            'Žiadne súbory pre: {}'.format(entry.get('title', '')),
+            'Webshare.cz', 'Otvorte film alebo epizódu znova',
             xbmcgui.NOTIFICATION_INFO)
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
+
+    title = query.get('title', '')
+    year = query.get('year', '')
+    results = _quiet(_ws_collect_results, title, year,
+                     query.get('season'), query.get('episode')) or []
+    original = query.get('original', '')
+    if not results and original and original.lower() != title.lower():
+        results = _quiet(_ws_collect_results, original, year) or []
+
+    if not results:
+        xbmcgui.Dialog().notification(
+            'Webshare.cz',
+            'Žiadne súbory pre: {}'.format(entry.get('title', '') or title),
+            xbmcgui.NOTIFICATION_INFO)
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
+        return
+
     _render_stream_list(results, entry.get('info') or {},
                         entry.get('art') or {}, entry.get('cast') or [])
 
@@ -1028,7 +1023,7 @@ def show_movie_info(tmdb_id, title, year):
 
     Reached by clicking a non-folder, non-playable list item, so Kodi runs us
     as a script rather than waiting for us — no busy dialog is up and opening
-    the info screen here is safe. Browse there opens the collected files.
+    the info screen here is safe. Browse there searches for the files.
     """
     if HANDLE >= 0:
         _play_best(title, year)
@@ -1037,23 +1032,22 @@ def show_movie_info(tmdb_id, title, year):
     progress = xbmcgui.DialogProgressBG()
     progress.create('Webshare.cz', 'Načítavam: {}'.format(title))
     try:
-        detail, results = _detail_with_files(
-            lambda: _fetch_movie_detail(tmdb_id), title, year)
-        original = _usable_original(detail.get('original_title'))
-        if not results and original and original.lower() != title.lower():
-            progress.update(50, message='Skúšam originálny názov: {}'.format(
-                original))
-            results = _quiet(_ws_collect_results, original, year) or []
+        detail = _quiet(_fetch_movie_detail, tmdb_id) or {}
     finally:
         progress.close()
 
     info, art, cast_ = _movie_info_dict(detail, title, year)
     key = 'movie:{}'.format(tmdb_id)
-    _save_stream_list(key, info['title'], results, info, art, cast_)
+    _save_stream_list(key, info['title'],
+                      {'title': info['title'],
+                       'year': (detail.get('release_date') or '')[:4] or year,
+                       'original': _usable_original(
+                           detail.get('original_title'))},
+                      info, art, cast_)
 
     li = _info_listitem(info['title'], build_url('stream_list', key=key),
                         info, art, cast_)
-    _show_info(li, results, info['title'])
+    xbmcgui.Dialog().info(li)
 
 
 def show_movie_detail(tmdb_id, title, year):
@@ -1218,9 +1212,7 @@ def show_episode_info(tmdb_id, season, episode, title, show_title=''):
     progress = xbmcgui.DialogProgressBG()
     progress.create('Webshare.cz', 'Načítavam: {}'.format(name))
     try:
-        detail, results = _detail_with_files(
-            lambda: _fetch_episode(tmdb_id, snum, enum), title,
-            season=snum, episode=enum)
+        detail = _quiet(_fetch_episode, tmdb_id, snum, enum) or {}
     finally:
         progress.close()
 
@@ -1245,11 +1237,13 @@ def show_episode_info(tmdb_id, season, episode, title, show_title=''):
     art = {'thumb': still, 'fanart': still} if still else {}
 
     key = 'ep:{}:{}:{}'.format(tmdb_id, snum, enum)
-    _save_stream_list(key, name, results, info, art, cast_)
+    _save_stream_list(key, name,
+                      {'title': title, 'season': snum, 'episode': enum},
+                      info, art, cast_)
 
     li = _info_listitem(info['title'], build_url('stream_list', key=key),
                         info, art, cast_)
-    _show_info(li, results, name)
+    xbmcgui.Dialog().info(li)
 
 
 # ---------------------------------------------------------------------------
