@@ -28,6 +28,11 @@ CREDITS_CACHE_FILE = os.path.join(PROFILE_DIR, 'credits_cache.json')
 CREDITS_CACHE_MAX = 600
 CREDITS_WORKERS = 10
 
+# Webshare hits collected when an info screen opens, so its Play button can
+# offer them without searching again
+STREAMS_CACHE_FILE = os.path.join(PROFILE_DIR, 'stream_lists.json')
+STREAMS_CACHE_MAX = 20
+
 VIDEO_EXTENSIONS = (
     '.avi', '.mkv', '.mp4', '.m4v', '.mov', '.wmv', '.flv',
     '.mpg', '.mpeg', '.ts', '.vob', '.divx', '.webm', '.3gp',
@@ -192,6 +197,11 @@ def _distill_credits(data):
     return {'directors': directors, 'cast': cast}
 
 
+def _credits_key(media_type, tmdb_id):
+    lang = ADDON.getSetting('tmdb_language') or 'cs-CZ'
+    return '{}:{}:{}'.format(media_type, tmdb_id, lang)
+
+
 def prefetch_credits(results, media_type=None):
     """Fetch cast/crew for a page of TMDB results, in parallel and cached.
 
@@ -211,8 +221,7 @@ def prefetch_credits(results, media_type=None):
         return {}
 
     cache = _load_credits_cache()
-    lang = ADDON.getSetting('tmdb_language') or 'cs-CZ'
-    keys = {(mt, tid): '{}:{}:{}'.format(mt, tid, lang) for mt, tid in wanted}
+    keys = {(mt, tid): _credits_key(mt, tid) for mt, tid in wanted}
 
     out = {}
     missing = []
@@ -246,16 +255,21 @@ def prefetch_credits(results, media_type=None):
     return out
 
 
+def _credits_cast(credits_):
+    """Cast from distilled credits, in Kodi's setCast() format."""
+    return [{'name': c['name'], 'role': c.get('character', ''),
+             'thumbnail': TMDB.poster_url(c.get('profile_path'), 'w185'),
+             'order': i}
+            for i, c in enumerate((credits_ or {}).get('cast') or [])]
+
+
 def _apply_credits(li, credits_, info):
     """Attach director + cast from prefetched credits to a list item."""
     if not credits_:
         return
     if credits_.get('directors'):
         info['director'] = ', '.join(credits_['directors'])
-    cast = [{'name': c['name'], 'role': c.get('character', ''),
-             'thumbnail': TMDB.poster_url(c.get('profile_path'), 'w185'),
-             'order': i}
-            for i, c in enumerate(credits_.get('cast', []))]
+    cast = _credits_cast(credits_)
     if cast:
         li.setCast(cast)
 
@@ -265,7 +279,8 @@ def _usable_original(title):
     return '' if is_unrenderable(title) else (title or '')
 
 
-def _search_context_items(title, original='', year='', season=None, episode=None):
+def _search_context_items(title, original='', year='', season=None, episode=None,
+                          browse_url=''):
     """Context menu entries for playing / browsing webshare files."""
     original = _usable_original(original)
     extra = {}
@@ -276,7 +291,8 @@ def _search_context_items(title, original='', year='', season=None, episode=None
             build_url('play_pick', title=title, original_title=original,
                       year=year, **extra))),
         ('Prehliadať súbory na Webshare', 'Container.Update({})'.format(
-            build_url('ws_search_title', title=title, year=year, **extra))),
+            browse_url or build_url('ws_search_title', title=title, year=year,
+                                    **extra))),
     ]
     if original and original.lower() != title.lower():
         items.append(('Prehliadať súbory (originál)', 'Container.Update({})'.format(
@@ -316,7 +332,9 @@ def _movie_listitem(item, credits_=None):
     fanart = TMDB.fanart_url(item.get('backdrop_path'))
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
     li.addContextMenuItems(_search_context_items(
-        title, item.get('original_title', ''), year))
+        title, item.get('original_title', ''), year,
+        browse_url=build_url('movie_detail', tmdb_id=item.get('id', ''),
+                             title=title, year=year)))
     return li, title, year
 
 
@@ -345,6 +363,25 @@ def _tv_listitem(item, credits_=None):
     li.addContextMenuItems(_search_context_items(
         title, item.get('original_name', ''), year))
     return li, title, year
+
+
+def _add_movie_item(item, credits_=None):
+    """Add a movie to the current listing.
+
+    Not a folder and not playable, so clicking it makes Kodi run us as a plain
+    script instead of waiting for a directory or a resolved URL. Only from that
+    context is it safe to open the info screen — see show_movie_info.
+    """
+    li, title, year = _movie_listitem(item, credits_)
+    url = build_url('movie_info', tmdb_id=item['id'], title=title, year=year)
+    xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
+
+
+def _add_tv_item(item, credits_=None):
+    """Add a series to the current listing; it opens the season list."""
+    li, title, year = _tv_listitem(item, credits_)
+    url = build_url('tv_detail', tmdb_id=item['id'], title=title, year=year)
+    xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
 
 def _enable_sort_methods():
@@ -527,6 +564,31 @@ def play_webshare(ident, name=''):
     xbmcplugin.setResolvedUrl(HANDLE, True, li)
 
 
+def play_stream(key):
+    """Play button of an info screen.
+
+    Kodi wants a URL from us here and is holding a busy dialog until it gets
+    one, so asking which file to use has to happen elsewhere.
+    """
+    _handoff(build_url('pick_stream', key=key))
+
+
+def pick_stream(key):
+    """Play the file the user picks out of what the info screen collected."""
+    title, results = _load_stream_list(key)
+    if not results:
+        xbmcgui.Dialog().ok('Webshare.cz',
+                            'Žiadne súbory pre: {}'.format(title))
+        return
+
+    labels = ['{} [{}]'.format(r['name'], r['size_str']) for r in results]
+    idx = xbmcgui.Dialog().select('Vyber súbor: {}'.format(title), labels)
+    if idx < 0:
+        return
+
+    _play_direct(results[idx]['ident'], results[idx]['name'])
+
+
 def play_pick(title, original_title='', year='', season=None, episode=None):
     """Search webshare, let the user pick a file in a dialog and play it.
 
@@ -615,15 +677,9 @@ def show_trending(page=1):
     for item in data.get('results', []):
         mt = item.get('media_type', 'movie')
         if mt == 'movie':
-            li, title, year = _movie_listitem(item, creds.get(item['id']))
-            url = build_url('movie_detail', tmdb_id=item['id'],
-                            title=title, year=year)
-            xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+            _add_movie_item(item, creds.get(item['id']))
         elif mt == 'tv':
-            li, title, year = _tv_listitem(item, creds.get(item['id']))
-            url = build_url('tv_detail', tmdb_id=item['id'],
-                            title=title, year=year)
-            xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+            _add_tv_item(item, creds.get(item['id']))
     _add_page_items(data, 'trending')
     _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
@@ -645,10 +701,7 @@ def show_movies(category, page=1):
     xbmcplugin.setContent(HANDLE, 'movies')
     creds = prefetch_credits(data.get('results', []), 'movie')
     for item in data.get('results', []):
-        li, title, year = _movie_listitem(item, creds.get(item['id']))
-        url = build_url('movie_detail', tmdb_id=item['id'],
-                        title=title, year=year)
-        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+        _add_movie_item(item, creds.get(item['id']))
     _add_page_items(data, 'movies_' + category)
     _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
@@ -669,10 +722,7 @@ def show_tv(category, page=1):
     xbmcplugin.setContent(HANDLE, 'tvshows')
     creds = prefetch_credits(data.get('results', []), 'tv')
     for item in data.get('results', []):
-        li, title, year = _tv_listitem(item, creds.get(item['id']))
-        url = build_url('tv_detail', tmdb_id=item['id'],
-                        title=title, year=year)
-        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+        _add_tv_item(item, creds.get(item['id']))
     _add_page_items(data, 'tv_' + category)
     _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
@@ -736,14 +786,9 @@ def show_genre_list(media_type, genre_id, genre_name, page=1,
     creds = prefetch_credits(data.get('results', []), media_type)
     for item in data.get('results', []):
         if media_type == 'movie':
-            li, title, year = _movie_listitem(item, creds.get(item['id']))
-            url = build_url('movie_detail', tmdb_id=item['id'],
-                            title=title, year=year)
+            _add_movie_item(item, creds.get(item['id']))
         else:
-            li, title, year = _tv_listitem(item, creds.get(item['id']))
-            url = build_url('tv_detail', tmdb_id=item['id'],
-                            title=title, year=year)
-        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+            _add_tv_item(item, creds.get(item['id']))
     _add_page_items(data, 'genre_list',
                     {'media_type': media_type, 'genre_id': genre_id,
                      'genre_name': genre_name, 'sort_by': sort_by})
@@ -804,14 +849,9 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
     creds = prefetch_credits(data.get('results', []), media_type)
     for item in data.get('results', []):
         if media_type == 'movie':
-            li, title, yr = _movie_listitem(item, creds.get(item['id']))
-            url = build_url('movie_detail', tmdb_id=item['id'],
-                            title=title, year=yr)
+            _add_movie_item(item, creds.get(item['id']))
         else:
-            li, title, yr = _tv_listitem(item, creds.get(item['id']))
-            url = build_url('tv_detail', tmdb_id=item['id'],
-                            title=title, year=yr)
-        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+            _add_tv_item(item, creds.get(item['id']))
     _add_page_items(data, 'year_list',
                     {'media_type': media_type, 'year': year,
                      'sort_by': sort_by})
@@ -822,6 +862,91 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
 # ---------------------------------------------------------------------------
 # Movie / TV detail
 # ---------------------------------------------------------------------------
+
+def _save_stream_list(key, title, results):
+    """Remember one title's Webshare hits so its picker can open instantly."""
+    try:
+        with open(STREAMS_CACHE_FILE, 'r', encoding='utf-8') as f:
+            store = json.load(f)
+        if not isinstance(store, dict):
+            store = {}
+    except (IOError, OSError, ValueError):
+        store = {}
+
+    store.pop(key, None)
+    store[key] = {'title': title, 'results': results}
+    for old in list(store)[:len(store) - STREAMS_CACHE_MAX]:
+        del store[old]
+    try:
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        with open(STREAMS_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(store, f, ensure_ascii=False)
+    except (IOError, OSError):
+        pass
+
+
+def _load_stream_list(key):
+    """Return (title, results) stored by _save_stream_list."""
+    try:
+        with open(STREAMS_CACHE_FILE, 'r', encoding='utf-8') as f:
+            store = json.load(f)
+        entry = store.get(key) or {}
+    except (IOError, OSError, ValueError, AttributeError):
+        return '', []
+    return entry.get('title', ''), entry.get('results') or []
+
+
+def _handoff(url):
+    """Report the URL as unresolvable, then run the same action as a script.
+
+    Kodi holds a busy dialog while it waits for a resolved URL, and anything
+    that needs a busy dialog of its own on top of that makes it abort with
+    "two concurrent busydialogs" on Android. RunPlugin does not wait and does
+    not raise a busy dialog, so dialogs opened from there are safe.
+    """
+    if HANDLE >= 0:
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+    xbmc.executebuiltin('RunPlugin({})'.format(url))
+
+
+def _quiet(fn, *args):
+    """Run fn, turning a network or API failure into no data.
+
+    The info screen is worth showing with a missing plot or an empty file list;
+    it is not worth replacing with a traceback.
+    """
+    try:
+        return fn(*args)
+    except Exception as e:
+        xbmc.log('plugin.video.webshare: {} failed: {}'.format(
+            getattr(fn, '__name__', fn), e), xbmc.LOGWARNING)
+        return None
+
+
+def _detail_with_files(fetch_detail, title, year='', season=None, episode=None):
+    """Fetch TMDB detail and search Webshare at the same time.
+
+    Both take about a second, so overlapping them roughly halves the wait
+    before the info screen appears.
+    """
+    get_tmdb()      # warm both clients here: they may want to open settings,
+    get_webshare()  # which must not happen on a worker thread
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        detail = pool.submit(_quiet, fetch_detail)
+        files = pool.submit(_quiet, _ws_collect_results,
+                            title, year, season, episode)
+        return detail.result() or {}, files.result() or []
+
+
+def _show_info(li, results, title):
+    """Open Kodi's info screen, warning first when there is nothing to play."""
+    if not results:
+        xbmcgui.Dialog().notification(
+            'Webshare.cz', 'Žiadne súbory pre: {}'.format(title),
+            xbmcgui.NOTIFICATION_INFO)
+    xbmcgui.Dialog().info(li)
+
 
 def _movie_info_dict(detail, title, year):
     """Build the info dict and artwork shared by every file of one movie."""
@@ -857,6 +982,52 @@ def _movie_info_dict(detail, title, year):
     if fanart:
         art['fanart'] = fanart
     return info, art, _tmdb_cast(credits_.get('cast', []))
+
+
+def _fetch_movie_detail(tmdb_id):
+    tmdb = get_tmdb()
+    return tmdb.movie_detail(tmdb_id) if tmdb is not None else {}
+
+
+def show_movie_info(tmdb_id, title, year):
+    """Open Kodi's info screen for a movie, with its files already collected.
+
+    Reached by clicking a non-folder, non-playable list item, so Kodi runs us
+    as a script rather than waiting for us — no busy dialog is up and opening
+    the info screen here is safe. Its Play button resolves 'play_stream',
+    which hands over to the file picker.
+    """
+    if HANDLE >= 0:
+        # Kodi is waiting for a resolved URL (its own Play entry, a favourite).
+        _handoff(build_url('movie_info', tmdb_id=tmdb_id, title=title,
+                           year=year))
+        return
+
+    progress = xbmcgui.DialogProgressBG()
+    progress.create('Webshare.cz', 'Načítavam: {}'.format(title))
+    try:
+        detail, results = _detail_with_files(
+            lambda: _fetch_movie_detail(tmdb_id), title, year)
+        original = _usable_original(detail.get('original_title'))
+        if not results and original and original.lower() != title.lower():
+            progress.update(50, message='Skúšam originálny názov: {}'.format(
+                original))
+            results = _quiet(_ws_collect_results, original, year) or []
+    finally:
+        progress.close()
+
+    info, art, cast_ = _movie_info_dict(detail, title, year)
+    key = 'movie:{}'.format(tmdb_id)
+    _save_stream_list(key, info['title'], results)
+
+    li = xbmcgui.ListItem(info['title'], path=build_url('play_stream', key=key))
+    li.setInfo('video', info)
+    if cast_:
+        li.setCast(cast_)
+    if art:
+        li.setArt(art)
+    li.setProperty('IsPlayable', 'true')
+    _show_info(li, results, info['title'])
 
 
 def show_movie_detail(tmdb_id, title, year):
@@ -1009,15 +1180,79 @@ def show_tv_season(tmdb_id, season, title, original_title=''):
         if still:
             li.setArt({'thumb': still, 'fanart': still})
 
-        # Search on webshare with S01E01 pattern
+        # Webshare names episodes by the original title far more often
         search_title = original_title or title
         li.addContextMenuItems(_search_context_items(
             search_title, '', season=snum, episode=enum))
-        url = build_url('ws_search_episode', title=search_title,
-                        season=snum, episode=enum)
-        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+        url = build_url('episode_info', tmdb_id=tmdb_id, season=snum,
+                        episode=enum, title=search_title, show_title=title)
+        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
 
     xbmcplugin.endOfDirectory(HANDLE)
+
+
+def _fetch_episode(tmdb_id, season, episode):
+    tmdb = get_tmdb()
+    if tmdb is None:
+        return {}
+    for ep in tmdb.tv_season(tmdb_id, season).get('episodes') or []:
+        if ep.get('episode_number') == episode:
+            return ep
+    return {}
+
+
+def show_episode_info(tmdb_id, season, episode, title, show_title=''):
+    """Open Kodi's info screen for one episode, files already collected.
+
+    Same shape as show_movie_info — see there for why this must not run while
+    Kodi is waiting on us.
+    """
+    snum, enum = int(season), int(episode)
+    if HANDLE >= 0:
+        _handoff(build_url('episode_info', tmdb_id=tmdb_id, season=snum,
+                           episode=enum, title=title, show_title=show_title))
+        return
+
+    tag = 'S{:02d}E{:02d}'.format(snum, enum)
+    name = '{} {}'.format(show_title or title, tag)
+    progress = xbmcgui.DialogProgressBG()
+    progress.create('Webshare.cz', 'Načítavam: {}'.format(name))
+    try:
+        detail, results = _detail_with_files(
+            lambda: _fetch_episode(tmdb_id, snum, enum), title,
+            season=snum, episode=enum)
+    finally:
+        progress.close()
+
+    ep_title = detail.get('name') or 'Epizóda {}'.format(enum)
+    info = {'title': '{} - {}'.format(tag, ep_title),
+            'plot': detail.get('overview', ''),
+            'tvshowtitle': show_title or title,
+            'season': snum, 'episode': enum,
+            'rating': detail.get('vote_average', 0),
+            'mediatype': 'episode'}
+    directors = [c['name'] for c in detail.get('crew') or []
+                 if c.get('job') == 'Director']
+    if directors:
+        info['director'] = ', '.join(directors)
+
+    key = 'ep:{}:{}:{}'.format(tmdb_id, snum, enum)
+    _save_stream_list(key, name, results)
+
+    li = xbmcgui.ListItem(info['title'], path=build_url('play_stream', key=key))
+    li.setInfo('video', info)
+    # Series regulars first (cached when the show was listed), guests after
+    cast_ = _credits_cast(_load_credits_cache().get(_credits_key('tv', tmdb_id)))
+    cast_ += _tmdb_cast(detail.get('guest_stars') or [])
+    for i, member in enumerate(cast_):
+        member['order'] = i
+    if cast_:
+        li.setCast(cast_)
+    still = TMDB.fanart_url(detail.get('still_path'), 'w780')
+    if still:
+        li.setArt({'thumb': still, 'fanart': still})
+    li.setProperty('IsPlayable', 'true')
+    _show_info(li, results, name)
 
 
 # ---------------------------------------------------------------------------
@@ -1049,15 +1284,9 @@ def do_search(query, page=1):
     for item in data.get('results', []):
         mt = item.get('media_type', '')
         if mt == 'movie':
-            li, title, year = _movie_listitem(item, creds.get(item['id']))
-            url = build_url('movie_detail', tmdb_id=item['id'],
-                            title=title, year=year)
-            xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+            _add_movie_item(item, creds.get(item['id']))
         elif mt == 'tv':
-            li, title, year = _tv_listitem(item, creds.get(item['id']))
-            url = build_url('tv_detail', tmdb_id=item['id'],
-                            title=title, year=year)
-            xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+            _add_tv_item(item, creds.get(item['id']))
 
     _add_page_items(data, 'tmdb_search', {'query': query})
     xbmcplugin.endOfDirectory(HANDLE)
@@ -1210,6 +1439,16 @@ def router():
                            page=1, sort_by=new_sort)
 
     # TMDB detail
+    elif action == 'movie_info':
+        show_movie_info(params.get('tmdb_id'),
+                        params.get('title', ''),
+                        params.get('year', ''))
+    elif action == 'episode_info':
+        show_episode_info(params.get('tmdb_id'),
+                          params.get('season', 1),
+                          params.get('episode', 1),
+                          params.get('title', ''),
+                          params.get('show_title', ''))
     elif action == 'movie_detail':
         show_movie_detail(params.get('tmdb_id'),
                           params.get('title', ''),
@@ -1232,7 +1471,9 @@ def router():
     # Webshare title search (from movie/tv detail)
     elif action == 'ws_search_title':
         search_webshare_for_title(params.get('title', ''),
-                                  params.get('year', ''))
+                                  params.get('year', ''),
+                                  params.get('season'),
+                                  params.get('episode'))
     elif action == 'ws_search_episode':
         search_webshare_for_title(params.get('title', ''),
                                   season=params.get('season'),
@@ -1247,6 +1488,10 @@ def router():
     # Playback
     elif action == 'play':
         play_webshare(params.get('ident', ''), params.get('name', ''))
+    elif action == 'play_stream':
+        play_stream(params.get('key', ''))
+    elif action == 'pick_stream':
+        pick_stream(params.get('key', ''))
     elif action == 'play_pick':
         play_pick(params.get('title', ''),
                   params.get('original_title', ''),
