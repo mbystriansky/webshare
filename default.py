@@ -507,18 +507,7 @@ def search_webshare_for_title(title, year='', season=None, episode=None):
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
-    xbmcplugin.setContent(HANDLE, 'videos')
-    for r in all_results:
-        label = '{} [{}]'.format(r['name'], r['size_str'])
-        li = xbmcgui.ListItem(label)
-        li.setInfo('video', {'title': r['name']})
-        li.setProperty('IsPlayable', 'true')
-        if r['img']:
-            li.setArt({'thumb': r['img'], 'icon': r['img']})
-        url = build_url('play', ident=r['ident'], name=r['name'])
-        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
-
-    xbmcplugin.endOfDirectory(HANDLE)
+    _render_stream_list(all_results, {}, {}, [])
 
 
 def _add_stream_headers(link):
@@ -949,17 +938,17 @@ def _show_info(li, results, title):
 def _render_stream_list(results, info, art, cast_):
     """List Webshare files as a directory, each carrying the title's metadata.
 
-    A row is identified by its file name and size, so those override the
-    title from TMDB — otherwise every row shows the film's name. The film's
-    runtime goes too: repeated on every row it only says the same thing.
+    A row is identified by its file name, so that overrides the title from
+    TMDB — otherwise every row shows the film's name. The film's runtime goes
+    too: repeated on every row it only says the same thing. The size is left
+    to Kodi, which shows it in its own column.
     """
     xbmcplugin.setContent(HANDLE, 'videos')
     shared = {k: v for k, v in info.items() if k != 'duration'}
     for r in results:
-        label = '{} [{}]'.format(r['name'], r['size_str'])
-        li = xbmcgui.ListItem(label)
+        li = xbmcgui.ListItem(r['name'])
         li.setLabel2(r['size_str'])
-        li.setInfo('video', dict(shared, title=label,
+        li.setInfo('video', dict(shared, title=r['name'],
                                  size=int(r.get('size', 0) * 1024 * 1024)))
         if cast_:
             li.setCast(cast_)
