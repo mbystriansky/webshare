@@ -12,7 +12,7 @@ import xbmcgui
 import xbmcplugin
 import xbmcvfs
 
-from resources.lib.tmdb import TMDB, TMDBError
+from resources.lib.tmdb import TMDB, TMDBError, is_unrenderable
 from resources.lib.webshare import WebshareAPI, WebshareAPIError
 
 ADDON = xbmcaddon.Addon()
@@ -21,6 +21,11 @@ BASE_URL = sys.argv[0]
 PROFILE_DIR = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
 HISTORY_FILE = os.path.join(PROFILE_DIR, 'search_history.json')
 MAX_HISTORY = 20
+
+# Cast/crew shown in list items so Kodi's built-in info dialog has them
+CREDITS_CACHE_FILE = os.path.join(PROFILE_DIR, 'credits_cache.json')
+CREDITS_CACHE_MAX = 600
+CREDITS_WORKERS = 10
 
 VIDEO_EXTENSIONS = (
     '.avi', '.mkv', '.mp4', '.m4v', '.mov', '.wmv', '.flv',
@@ -154,7 +159,140 @@ def add_to_history(query):
 # List item helpers
 # ---------------------------------------------------------------------------
 
-def _movie_listitem(item):
+def _load_credits_cache():
+    try:
+        with open(CREDITS_CACHE_FILE, 'r', encoding='utf-8') as f:
+            cache = json.load(f)
+        return cache if isinstance(cache, dict) else {}
+    except (IOError, OSError, ValueError):
+        return {}
+
+
+def _save_credits_cache(cache):
+    if len(cache) > CREDITS_CACHE_MAX:
+        # Drop oldest-inserted entries; dicts keep insertion order
+        for key in list(cache)[:len(cache) - CREDITS_CACHE_MAX]:
+            del cache[key]
+    try:
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        with open(CREDITS_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except (IOError, OSError):
+        pass
+
+
+def _distill_credits(data):
+    """Keep only what list items need, so the cache stays small."""
+    directors = [c['name'] for c in data.get('crew', [])
+                 if c.get('job') == 'Director' and c.get('name')]
+    cast = [{'name': c.get('name', ''), 'character': c.get('character', ''),
+             'profile_path': c.get('profile_path')}
+            for c in data.get('cast', [])[:15] if c.get('name')]
+    return {'directors': directors, 'cast': cast}
+
+
+def prefetch_credits(results, media_type=None):
+    """Fetch cast/crew for a page of TMDB results, in parallel and cached.
+
+    Returns {tmdb_id: distilled credits}. Failures are skipped silently — the
+    listing still works, it just shows no cast for those entries.
+    """
+    tmdb = get_tmdb()
+    if tmdb is None:
+        return {}
+
+    wanted = []
+    for item in results:
+        mt = media_type or item.get('media_type')
+        if mt in ('movie', 'tv') and item.get('id'):
+            wanted.append((mt, item['id']))
+    if not wanted:
+        return {}
+
+    cache = _load_credits_cache()
+    lang = ADDON.getSetting('tmdb_language') or 'cs-CZ'
+    keys = {(mt, tid): '{}:{}:{}'.format(mt, tid, lang) for mt, tid in wanted}
+
+    out = {}
+    missing = []
+    for mt, tid in wanted:
+        cached = cache.get(keys[(mt, tid)])
+        if cached is None:
+            missing.append((mt, tid))
+        else:
+            out[tid] = cached
+
+    if missing:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def fetch(entry):
+            mt, tid = entry
+            getter = tmdb.movie_credits if mt == 'movie' else tmdb.tv_credits
+            try:
+                return entry, _distill_credits(getter(tid))
+            except Exception:  # network/API hiccup — listing must not break
+                return entry, None
+
+        workers = min(CREDITS_WORKERS, len(missing))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for entry, credits_ in pool.map(fetch, missing):
+                if credits_ is None:
+                    continue
+                out[entry[1]] = credits_
+                cache[keys[entry]] = credits_
+        _save_credits_cache(cache)
+
+    return out
+
+
+def _apply_credits(li, credits_, info):
+    """Attach director + cast from prefetched credits to a list item."""
+    if not credits_:
+        return
+    if credits_.get('directors'):
+        info['director'] = ', '.join(credits_['directors'])
+    cast = [{'name': c['name'], 'role': c.get('character', ''),
+             'thumbnail': TMDB.poster_url(c.get('profile_path'), 'w185'),
+             'order': i}
+            for i, c in enumerate(credits_.get('cast', []))]
+    if cast:
+        li.setCast(cast)
+
+
+def _usable_original(title):
+    """Original title, unless it is in a script Kodi cannot display."""
+    return '' if is_unrenderable(title) else (title or '')
+
+
+def _search_context_items(title, original='', year='', season=None, episode=None):
+    """Context menu entries for playing / browsing webshare files."""
+    original = _usable_original(original)
+    extra = {}
+    if season is not None and episode is not None:
+        extra = {'season': season, 'episode': episode}
+    items = [
+        ('Prehrať – vybrať súbor', 'RunPlugin({})'.format(
+            build_url('play_pick', title=title, original_title=original,
+                      year=year, **extra))),
+        ('Prehliadať súbory na Webshare', 'Container.Update({})'.format(
+            build_url('ws_search_title', title=title, year=year, **extra))),
+    ]
+    if original and original.lower() != title.lower():
+        items.append(('Prehliadať súbory (originál)', 'Container.Update({})'.format(
+            build_url('ws_search_title', title=original, year=year, **extra))))
+    return items
+
+
+def _tmdb_cast(cast, limit=15):
+    """Convert TMDB cast/guest_stars entries to Kodi setCast() format."""
+    return [{'name': c.get('name', ''),
+             'role': c.get('character', ''),
+             'thumbnail': TMDB.poster_url(c.get('profile_path'), 'w185'),
+             'order': i}
+            for i, c in enumerate(cast[:limit]) if c.get('name')]
+
+
+def _movie_listitem(item, credits_=None):
     """Create a ListItem from a TMDB movie dict."""
     title = item.get('title') or item.get('original_title', '')
     year = (item.get('release_date') or '')[:4]
@@ -165,17 +303,23 @@ def _movie_listitem(item):
         label += '  [COLOR gold]\u2605 {:.1f} ({:,})[/COLOR]'.format(rating, votes)
 
     li = xbmcgui.ListItem(label)
-    li.setInfo('video', {'title': label, 'plot': item.get('overview', ''),
-                         'year': int(year) if year.isdigit() else 0,
-                         'rating': rating, 'votes': item.get('vote_count', 0)})
+    info = {'title': label, 'plot': item.get('overview', ''),
+            'originaltitle': _usable_original(item.get('original_title')),
+            'year': int(year) if year.isdigit() else 0,
+            'rating': rating, 'votes': item.get('vote_count', 0),
+            'mediatype': 'movie'}
+    _apply_credits(li, credits_, info)
+    li.setInfo('video', info)
 
     poster = TMDB.poster_url(item.get('poster_path'))
     fanart = TMDB.fanart_url(item.get('backdrop_path'))
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
+    li.addContextMenuItems(_search_context_items(
+        title, item.get('original_title', ''), year))
     return li, title, year
 
 
-def _tv_listitem(item):
+def _tv_listitem(item, credits_=None):
     """Create a ListItem from a TMDB tv dict."""
     title = item.get('name') or item.get('original_name', '')
     year = (item.get('first_air_date') or '')[:4]
@@ -186,13 +330,22 @@ def _tv_listitem(item):
         label += '  [COLOR gold]\u2605 {:.1f} ({:,})[/COLOR]'.format(rating, votes)
 
     li = xbmcgui.ListItem(label)
-    li.setInfo('video', {'title': label, 'plot': item.get('overview', ''),
-                         'year': int(year) if year.isdigit() else 0,
-                         'rating': rating, 'votes': item.get('vote_count', 0)})
+    info = {'title': label, 'plot': item.get('overview', ''),
+            'originaltitle': _usable_original(item.get('original_name')),
+            'year': int(year) if year.isdigit() else 0,
+            'rating': rating, 'votes': item.get('vote_count', 0),
+            'mediatype': 'tvshow'}
+    _apply_credits(li, credits_, info)
+    li.setInfo('video', info)
 
     poster = TMDB.poster_url(item.get('poster_path'))
     fanart = TMDB.fanart_url(item.get('backdrop_path'))
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
+    original = item.get('original_name', '')
+    ctx = [('Informácie', 'RunPlugin({})'.format(
+        build_url('tv_info', tmdb_id=item['id'], title=title, year=year)))]
+    ctx += _search_context_items(title, original, year)
+    li.addContextMenuItems(ctx)
     return li, title, year
 
 
@@ -276,12 +429,14 @@ def _build_search_queries(title, year='', season=None, episode=None):
     return queries
 
 
-def search_webshare_for_title(title, year='', season=None, episode=None):
-    """Search webshare for a movie/episode title and list results as directory."""
+def _ws_collect_results(title, year='', season=None, episode=None):
+    """Search webshare and return deduplicated video-file results.
+
+    Returns None when the Webshare client is not configured.
+    """
     ws = get_webshare()
     if ws is None:
-        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
-        return
+        return None
 
     queries = _build_search_queries(title, year, season, episode)
 
@@ -298,6 +453,15 @@ def search_webshare_for_title(title, year='', season=None, episode=None):
                 if any(name.lower().endswith(ext) for ext in VIDEO_EXTENSIONS):
                     all_results.append(item)
                     seen_idents.add(item['ident'])
+    return all_results
+
+
+def search_webshare_for_title(title, year='', season=None, episode=None):
+    """Search webshare for a movie/episode title and list results as directory."""
+    all_results = _ws_collect_results(title, year, season, episode)
+    if all_results is None:
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
+        return
 
     if not all_results:
         xbmcgui.Dialog().ok('Webshare.cz', 'Žiadne výsledky pre: {}'.format(title))
@@ -362,6 +526,51 @@ def play_webshare(ident, name=''):
     xbmcplugin.setResolvedUrl(HANDLE, True, li)
 
 
+def play_pick(title, original_title='', year='', season=None, episode=None):
+    """Search webshare, let the user pick a file in a dialog and play it.
+
+    Reached both from the info dialog's Play button (Kodi waits for
+    setResolvedUrl) and from context menus via RunPlugin (no handle).
+    """
+    def abort():
+        if HANDLE >= 0:
+            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+
+    progress = xbmcgui.DialogProgressBG()
+    progress.create('Webshare.cz', 'Hľadám súbory: {}'.format(title))
+    try:
+        results = _ws_collect_results(title, year, season, episode)
+        if results is None:
+            abort()
+            return
+        if not results and original_title \
+                and original_title.lower() != title.lower():
+            progress.update(50, message='Skúšam originálny názov: {}'.format(
+                original_title))
+            results = _ws_collect_results(original_title, year,
+                                          season, episode) or []
+    finally:
+        progress.close()
+
+    if not results:
+        xbmcgui.Dialog().ok('Webshare.cz',
+                            'Žiadne výsledky pre: {}'.format(title))
+        abort()
+        return
+
+    labels = ['{} [{}]'.format(r['name'], r['size_str']) for r in results]
+    idx = xbmcgui.Dialog().select('Vyber súbor: {}'.format(title), labels)
+    if idx < 0:
+        abort()
+        return
+
+    ident, name = results[idx]['ident'], results[idx]['name']
+    if HANDLE >= 0:
+        play_webshare(ident, name)
+    else:
+        _play_direct(ident, name)
+
+
 # ---------------------------------------------------------------------------
 # Main menu
 # ---------------------------------------------------------------------------
@@ -412,15 +621,16 @@ def show_trending(page=1):
         return
 
     xbmcplugin.setContent(HANDLE, 'videos')
+    creds = prefetch_credits(data.get('results', []))
     for item in data.get('results', []):
         mt = item.get('media_type', 'movie')
         if mt == 'movie':
-            li, title, year = _movie_listitem(item)
+            li, title, year = _movie_listitem(item, creds.get(item['id']))
             url = build_url('movie_detail', tmdb_id=item['id'],
                             title=title, year=year)
             xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
         elif mt == 'tv':
-            li, title, year = _tv_listitem(item)
+            li, title, year = _tv_listitem(item, creds.get(item['id']))
             url = build_url('tv_detail', tmdb_id=item['id'],
                             title=title, year=year)
             xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
@@ -443,8 +653,9 @@ def show_movies(category, page=1):
         return
 
     xbmcplugin.setContent(HANDLE, 'movies')
+    creds = prefetch_credits(data.get('results', []), 'movie')
     for item in data.get('results', []):
-        li, title, year = _movie_listitem(item)
+        li, title, year = _movie_listitem(item, creds.get(item['id']))
         url = build_url('movie_detail', tmdb_id=item['id'],
                         title=title, year=year)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
@@ -466,8 +677,9 @@ def show_tv(category, page=1):
         return
 
     xbmcplugin.setContent(HANDLE, 'tvshows')
+    creds = prefetch_credits(data.get('results', []), 'tv')
     for item in data.get('results', []):
-        li, title, year = _tv_listitem(item)
+        li, title, year = _tv_listitem(item, creds.get(item['id']))
         url = build_url('tv_detail', tmdb_id=item['id'],
                         title=title, year=year)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
@@ -531,13 +743,14 @@ def show_genre_list(media_type, genre_id, genre_name, page=1,
                           current_sort=sort_by),
         sort_li, isFolder=True)
 
+    creds = prefetch_credits(data.get('results', []), media_type)
     for item in data.get('results', []):
         if media_type == 'movie':
-            li, title, year = _movie_listitem(item)
+            li, title, year = _movie_listitem(item, creds.get(item['id']))
             url = build_url('movie_detail', tmdb_id=item['id'],
                             title=title, year=year)
         else:
-            li, title, year = _tv_listitem(item)
+            li, title, year = _tv_listitem(item, creds.get(item['id']))
             url = build_url('tv_detail', tmdb_id=item['id'],
                             title=title, year=year)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
@@ -598,13 +811,14 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
                           year=year, current_sort=sort_by),
         sort_li, isFolder=True)
 
+    creds = prefetch_credits(data.get('results', []), media_type)
     for item in data.get('results', []):
         if media_type == 'movie':
-            li, title, yr = _movie_listitem(item)
+            li, title, yr = _movie_listitem(item, creds.get(item['id']))
             url = build_url('movie_detail', tmdb_id=item['id'],
                             title=title, year=yr)
         else:
-            li, title, yr = _tv_listitem(item)
+            li, title, yr = _tv_listitem(item, creds.get(item['id']))
             url = build_url('tv_detail', tmdb_id=item['id'],
                             title=title, year=yr)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
@@ -620,56 +834,114 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
 # ---------------------------------------------------------------------------
 
 def show_movie_detail(tmdb_id, title, year):
-    """Show movie info and option to search on Webshare."""
+    """Open Kodi's video info dialog for a movie; Play resolves via webshare.
+
+    Credits are fetched here rather than when building the list, so browsing
+    stays fast.
+    """
     tmdb = get_tmdb()
     if tmdb is None:
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
+    progress = xbmcgui.DialogProgressBG()
+    progress.create('TMDB', 'Načítavam: {}'.format(title))
     try:
         detail = tmdb.movie_detail(tmdb_id)
     except TMDBError:
         detail = {}
+    finally:
+        progress.close()
 
-    xbmcplugin.setContent(HANDLE, 'movies')
-
-    # "Play" item - searches webshare
     play_title = detail.get('title') or title
     play_year = (detail.get('release_date') or '')[:4] or year
-    original = detail.get('original_title', '')
+    original = _usable_original(detail.get('original_title'))
 
-    li = xbmcgui.ListItem('[B]Hľadať na Webshare: {}[/B]'.format(play_title))
-    plot = detail.get('overview', '')
-    genres = ', '.join(g['name'] for g in detail.get('genres', []))
+    url = build_url('play_pick', title=play_title, original_title=original,
+                    year=play_year)
+    li = xbmcgui.ListItem(play_title, path=url)
+    li.setProperty('IsPlayable', 'true')
+
     runtime = detail.get('runtime', 0)
-    info = {'title': play_title, 'plot': plot, 'genre': genres,
+    info = {'title': play_title,
+            'originaltitle': original,
+            'plot': detail.get('overview', ''),
+            'genre': ', '.join(g['name'] for g in detail.get('genres', [])),
             'year': int(play_year) if play_year.isdigit() else 0,
             'rating': detail.get('vote_average', 0),
-            'duration': runtime * 60 if runtime else 0}
+            'votes': str(detail.get('vote_count', 0)),
+            'duration': runtime * 60 if runtime else 0,
+            'mediatype': 'movie'}
     credits_ = detail.get('credits', {})
     directors = [c['name'] for c in credits_.get('crew', [])
                  if c.get('job') == 'Director']
     if directors:
         info['director'] = ', '.join(directors)
-    cast_ = [c['name'] for c in credits_.get('cast', [])[:10]]
-    if cast_:
-        info['cast'] = cast_
+    writers = [c['name'] for c in credits_.get('crew', [])
+               if c.get('department') == 'Writing']
+    if writers:
+        info['writer'] = ', '.join(writers[:3])
+    studios = [s['name'] for s in detail.get('production_companies', [])]
+    if studios:
+        info['studio'] = ', '.join(studios[:3])
     li.setInfo('video', info)
+    cast_ = _tmdb_cast(credits_.get('cast', []))
+    if cast_:
+        li.setCast(cast_)
 
     poster = TMDB.poster_url(detail.get('poster_path'))
     fanart = TMDB.fanart_url(detail.get('backdrop_path'))
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
 
-    url = build_url('ws_search_title', title=play_title, year=play_year)
-    xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
+    xbmcgui.Dialog().info(li)
+    # Nothing to list — the dialog above is the whole interaction
+    xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
 
-    # Also search by original title if different
-    if original and original.lower() != play_title.lower():
-        li2 = xbmcgui.ListItem('Hľadať originálny názov: {}'.format(original))
-        li2.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
-        url2 = build_url('ws_search_title', title=original, year=play_year)
-        xbmcplugin.addDirectoryItem(HANDLE, url2, li2, isFolder=True)
 
-    xbmcplugin.endOfDirectory(HANDLE)
+def show_tv_info(tmdb_id, title, year):
+    """Open Kodi's video info dialog for a TV series (context menu action)."""
+    tmdb = get_tmdb()
+    if tmdb is None:
+        return
+
+    progress = xbmcgui.DialogProgressBG()
+    progress.create('TMDB', 'Načítavam: {}'.format(title))
+    try:
+        detail = tmdb.tv_detail(tmdb_id)
+    except TMDBError:
+        detail = {}
+    finally:
+        progress.close()
+
+    series_title = detail.get('name') or title
+    first_air = (detail.get('first_air_date') or '')[:4] or year
+
+    li = xbmcgui.ListItem(series_title)
+    info = {'title': series_title,
+            'originaltitle': _usable_original(detail.get('original_name')),
+            'plot': detail.get('overview', ''),
+            'genre': ', '.join(g['name'] for g in detail.get('genres', [])),
+            'year': int(first_air) if str(first_air).isdigit() else 0,
+            'rating': detail.get('vote_average', 0),
+            'votes': str(detail.get('vote_count', 0)),
+            'status': detail.get('status', ''),
+            'mediatype': 'tvshow'}
+    creators = [c['name'] for c in detail.get('created_by', [])]
+    if creators:
+        info['director'] = ', '.join(creators)
+    studios = [n['name'] for n in detail.get('networks', [])]
+    if studios:
+        info['studio'] = ', '.join(studios[:3])
+    li.setInfo('video', info)
+    cast_ = _tmdb_cast(detail.get('credits', {}).get('cast', []))
+    if cast_:
+        li.setCast(cast_)
+
+    poster = TMDB.poster_url(detail.get('poster_path'))
+    fanart = TMDB.fanart_url(detail.get('backdrop_path'))
+    li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
+
+    xbmcgui.Dialog().info(li)
 
 
 def show_tv_detail(tmdb_id, title, year):
@@ -705,7 +977,11 @@ def show_tv_detail(tmdb_id, title, year):
             'plot': season.get('overview', '') or detail.get('overview', ''),
             'tvshowtitle': series_title,
             'season': snum,
+            'mediatype': 'season',
         })
+        show_cast = _tmdb_cast(detail.get('credits', {}).get('cast', []))
+        if show_cast:
+            li.setCast(show_cast)
         sp = TMDB.poster_url(season.get('poster_path'))
         li.setArt({'thumb': sp or poster, 'poster': sp or poster, 'fanart': fanart})
         url = build_url('tv_season', tmdb_id=tmdb_id,
@@ -743,20 +1019,31 @@ def show_tv_season(tmdb_id, season, title, original_title=''):
         label = 'S{:02d}E{:02d} - {}'.format(snum, enum, ep_title)
 
         li = xbmcgui.ListItem(label)
-        li.setInfo('video', {
+        ep_info = {
             'title': ep_title,
             'plot': ep.get('overview', ''),
             'tvshowtitle': title,
             'season': snum,
             'episode': enum,
             'rating': ep.get('vote_average', 0),
-        })
+            'mediatype': 'episode',
+        }
+        ep_directors = [c['name'] for c in ep.get('crew', [])
+                        if c.get('job') == 'Director']
+        if ep_directors:
+            ep_info['director'] = ', '.join(ep_directors)
+        li.setInfo('video', ep_info)
+        guests = _tmdb_cast(ep.get('guest_stars', []))
+        if guests:
+            li.setCast(guests)
         still = TMDB.fanart_url(ep.get('still_path'), 'w780')
         if still:
             li.setArt({'thumb': still, 'fanart': still})
 
         # Search on webshare with S01E01 pattern
         search_title = original_title or title
+        li.addContextMenuItems(_search_context_items(
+            search_title, '', season=snum, episode=enum))
         url = build_url('ws_search_episode', title=search_title,
                         season=snum, episode=enum)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
@@ -789,15 +1076,16 @@ def do_search(query, page=1):
         return
 
     xbmcplugin.setContent(HANDLE, 'videos')
+    creds = prefetch_credits(data.get('results', []))
     for item in data.get('results', []):
         mt = item.get('media_type', '')
         if mt == 'movie':
-            li, title, year = _movie_listitem(item)
+            li, title, year = _movie_listitem(item, creds.get(item['id']))
             url = build_url('movie_detail', tmdb_id=item['id'],
                             title=title, year=year)
             xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
         elif mt == 'tv':
-            li, title, year = _tv_listitem(item)
+            li, title, year = _tv_listitem(item, creds.get(item['id']))
             url = build_url('tv_detail', tmdb_id=item['id'],
                             title=title, year=year)
             xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
@@ -957,6 +1245,9 @@ def router():
         show_movie_detail(params.get('tmdb_id'),
                           params.get('title', ''),
                           params.get('year', ''))
+    elif action == 'tv_info':
+        show_tv_info(params.get('tmdb_id'), params.get('title', ''),
+                     params.get('year', ''))
     elif action == 'tv_detail':
         show_tv_detail(params.get('tmdb_id'),
                        params.get('title', ''),
@@ -990,6 +1281,11 @@ def router():
     # Playback
     elif action == 'play':
         play_webshare(params.get('ident', ''), params.get('name', ''))
+    elif action == 'play_pick':
+        play_pick(params.get('title', ''),
+                  params.get('original_title', ''),
+                  params.get('year', ''),
+                  params.get('season'), params.get('episode'))
 
     # History
     elif action == 'history':
