@@ -342,11 +342,8 @@ def _tv_listitem(item, credits_=None):
     poster = TMDB.poster_url(item.get('poster_path'))
     fanart = TMDB.fanart_url(item.get('backdrop_path'))
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
-    original = item.get('original_name', '')
-    ctx = [('Informácie', 'RunPlugin({})'.format(
-        build_url('tv_info', tmdb_id=item['id'], title=title, year=year)))]
-    ctx += _search_context_items(title, original, year)
-    li.addContextMenuItems(ctx)
+    li.addContextMenuItems(_search_context_items(
+        title, item.get('original_name', ''), year))
     return li, title, year
 
 
@@ -465,7 +462,11 @@ def search_webshare_for_title(title, year='', season=None, episode=None):
         return
 
     if not all_results:
-        xbmcgui.Dialog().ok('Webshare.cz', 'Žiadne výsledky pre: {}'.format(title))
+        # A notification, not a modal dialog: Kodi is still holding its busy
+        # dialog open while it waits for this listing.
+        xbmcgui.Dialog().notification(
+            'Webshare.cz', 'Žiadne výsledky pre: {}'.format(title),
+            xbmcgui.NOTIFICATION_INFO)
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
@@ -529,9 +530,8 @@ def play_webshare(ident, name=''):
 def play_pick(title, original_title='', year='', season=None, episode=None):
     """Search webshare, let the user pick a file in a dialog and play it.
 
-    Only ever runs without a plugin handle. Opening modal dialogs while Kodi
-    waits for setResolvedUrl crashes it on Android, so the info dialog's Play
-    button routes here through _handoff_play_pick instead.
+    Runs from context menus via RunPlugin, so no plugin handle is involved
+    and Kodi is not waiting on a resolved URL.
     """
     progress = xbmcgui.DialogProgressBG()
     progress.create('Webshare.cz', 'Hľadám súbory: {}'.format(title))
@@ -559,20 +559,6 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
         return
 
     _play_direct(results[idx]['ident'], results[idx]['name'])
-
-
-def _handoff_play_pick(params):
-    """Answer Kodi's pending resolve, then run the picker free of it.
-
-    The info dialog's Play button makes Kodi wait for setResolvedUrl. Doing
-    the search and showing a select dialog inside that wait crashes Kodi on
-    Android, so tell Kodi there is nothing to resolve and re-enter through
-    RunPlugin, which is the same route the context menu uses.
-    """
-    xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
-    keys = ('title', 'original_title', 'year', 'season', 'episode')
-    args = {k: params[k] for k in keys if params.get(k)}
-    xbmc.executebuiltin('RunPlugin({})'.format(build_url('play_pick', **args)))
 
 
 # ---------------------------------------------------------------------------
@@ -837,41 +823,16 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
 # Movie / TV detail
 # ---------------------------------------------------------------------------
 
-def show_movie_detail(tmdb_id, title, year):
-    """Open Kodi's video info dialog for a movie; Play resolves via webshare.
-
-    Credits are fetched here rather than when building the list, so browsing
-    stays fast.
-    """
-    tmdb = get_tmdb()
-    if tmdb is None:
-        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
-        return
-
-    progress = xbmcgui.DialogProgressBG()
-    progress.create('TMDB', 'Načítavam: {}'.format(title))
-    try:
-        detail = tmdb.movie_detail(tmdb_id)
-    except TMDBError:
-        detail = {}
-    finally:
-        progress.close()
-
+def _movie_info_dict(detail, title, year):
+    """Build the info dict and artwork shared by every file of one movie."""
     play_title = detail.get('title') or title
     play_year = (detail.get('release_date') or '')[:4] or year
-    original = _usable_original(detail.get('original_title'))
-
-    url = build_url('play_pick', title=play_title, original_title=original,
-                    year=play_year)
-    li = xbmcgui.ListItem(play_title, path=url)
-    li.setProperty('IsPlayable', 'true')
-
     runtime = detail.get('runtime', 0)
     info = {'title': play_title,
-            'originaltitle': original,
+            'originaltitle': _usable_original(detail.get('original_title')),
             'plot': detail.get('overview', ''),
             'genre': ', '.join(g['name'] for g in detail.get('genres', [])),
-            'year': int(play_year) if play_year.isdigit() else 0,
+            'year': int(play_year) if str(play_year).isdigit() else 0,
             'rating': detail.get('vote_average', 0),
             'votes': str(detail.get('vote_count', 0)),
             'duration': runtime * 60 if runtime else 0,
@@ -888,64 +849,68 @@ def show_movie_detail(tmdb_id, title, year):
     studios = [s['name'] for s in detail.get('production_companies', [])]
     if studios:
         info['studio'] = ', '.join(studios[:3])
-    li.setInfo('video', info)
-    cast_ = _tmdb_cast(credits_.get('cast', []))
-    if cast_:
-        li.setCast(cast_)
-
+    art = {}
     poster = TMDB.poster_url(detail.get('poster_path'))
     fanart = TMDB.fanart_url(detail.get('backdrop_path'))
-    li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
+    if poster:
+        art.update({'thumb': poster, 'poster': poster})
+    if fanart:
+        art['fanart'] = fanart
+    return info, art, _tmdb_cast(credits_.get('cast', []))
 
-    xbmcgui.Dialog().info(li)
-    # Nothing to list — the dialog above is the whole interaction
-    xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
 
+def show_movie_detail(tmdb_id, title, year):
+    """List the Webshare files for a movie, each carrying its TMDB metadata.
 
-def show_tv_info(tmdb_id, title, year):
-    """Open Kodi's video info dialog for a TV series (context menu action)."""
+    Kodi keeps a busy dialog up while it waits for this listing. Opening a
+    dialog of our own here would leave it stacked underneath, and the next
+    thing needing a busy dialog — starting playback, running a script —
+    makes Kodi abort with "two concurrent busydialogs" on Android. So the
+    detail is a plain directory, and Kodi's own info dialog stays reachable
+    through the context menu, where it opens safely.
+    """
     tmdb = get_tmdb()
-    if tmdb is None:
+    detail = {}
+    if tmdb is not None:
+        try:
+            detail = tmdb.movie_detail(tmdb_id)
+        except TMDBError:
+            detail = {}
+
+    play_title = detail.get('title') or title
+    play_year = (detail.get('release_date') or '')[:4] or year
+    original = _usable_original(detail.get('original_title'))
+
+    results = _ws_collect_results(play_title, play_year)
+    if results is None:
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
+        return
+    if not results and original and original.lower() != play_title.lower():
+        results = _ws_collect_results(original, play_year) or []
+
+    if not results:
+        xbmcgui.Dialog().notification(
+            'Webshare.cz', 'Žiadne súbory pre: {}'.format(play_title),
+            xbmcgui.NOTIFICATION_INFO)
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
-    progress = xbmcgui.DialogProgressBG()
-    progress.create('TMDB', 'Načítavam: {}'.format(title))
-    try:
-        detail = tmdb.tv_detail(tmdb_id)
-    except TMDBError:
-        detail = {}
-    finally:
-        progress.close()
+    info, art, cast_ = _movie_info_dict(detail, title, year)
+    xbmcplugin.setContent(HANDLE, 'movies')
+    for r in results:
+        li = xbmcgui.ListItem('{} [{}]'.format(r['name'], r['size_str']))
+        li.setInfo('video', dict(info, size=r.get('size', 0)))
+        if cast_:
+            li.setCast(cast_)
+        li.setArt(dict(art, thumb=r['img'] or art.get('thumb', '')))
+        li.setProperty('IsPlayable', 'true')
+        url = build_url('play', ident=r['ident'], name=r['name'])
+        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
 
-    series_title = detail.get('name') or title
-    first_air = (detail.get('first_air_date') or '')[:4] or year
-
-    li = xbmcgui.ListItem(series_title)
-    info = {'title': series_title,
-            'originaltitle': _usable_original(detail.get('original_name')),
-            'plot': detail.get('overview', ''),
-            'genre': ', '.join(g['name'] for g in detail.get('genres', [])),
-            'year': int(first_air) if str(first_air).isdigit() else 0,
-            'rating': detail.get('vote_average', 0),
-            'votes': str(detail.get('vote_count', 0)),
-            'status': detail.get('status', ''),
-            'mediatype': 'tvshow'}
-    creators = [c['name'] for c in detail.get('created_by', [])]
-    if creators:
-        info['director'] = ', '.join(creators)
-    studios = [n['name'] for n in detail.get('networks', [])]
-    if studios:
-        info['studio'] = ', '.join(studios[:3])
-    li.setInfo('video', info)
-    cast_ = _tmdb_cast(detail.get('credits', {}).get('cast', []))
-    if cast_:
-        li.setCast(cast_)
-
-    poster = TMDB.poster_url(detail.get('poster_path'))
-    fanart = TMDB.fanart_url(detail.get('backdrop_path'))
-    li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
-
-    xbmcgui.Dialog().info(li)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_SIZE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_LABEL)
+    xbmcplugin.endOfDirectory(HANDLE)
 
 
 def show_tv_detail(tmdb_id, title, year):
@@ -1249,9 +1214,6 @@ def router():
         show_movie_detail(params.get('tmdb_id'),
                           params.get('title', ''),
                           params.get('year', ''))
-    elif action == 'tv_info':
-        show_tv_info(params.get('tmdb_id'), params.get('title', ''),
-                     params.get('year', ''))
     elif action == 'tv_detail':
         show_tv_detail(params.get('tmdb_id'),
                        params.get('title', ''),
@@ -1286,13 +1248,10 @@ def router():
     elif action == 'play':
         play_webshare(params.get('ident', ''), params.get('name', ''))
     elif action == 'play_pick':
-        if HANDLE >= 0:
-            _handoff_play_pick(params)
-        else:
-            play_pick(params.get('title', ''),
-                      params.get('original_title', ''),
-                      params.get('year', ''),
-                      params.get('season'), params.get('episode'))
+        play_pick(params.get('title', ''),
+                  params.get('original_title', ''),
+                  params.get('year', ''),
+                  params.get('season'), params.get('episode'))
 
     # History
     elif action == 'history':
