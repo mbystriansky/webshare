@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import traceback
 from urllib.parse import parse_qsl, urlencode, quote_plus
 
 import xbmc
@@ -17,8 +18,11 @@ from resources.lib.tmdb import TMDB, TMDBError, is_unrenderable
 from resources.lib.webshare import WebshareAPI, WebshareAPIError
 
 ADDON = xbmcaddon.Addon()
-HANDLE = int(sys.argv[1])
-BASE_URL = sys.argv[0]
+try:
+    HANDLE = int(sys.argv[1])
+except (IndexError, ValueError):
+    HANDLE = -1
+BASE_URL = sys.argv[0] if sys.argv else ''
 PROFILE_DIR = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
 HISTORY_FILE = os.path.join(PROFILE_DIR, 'search_history.json')
 MAX_HISTORY = 20
@@ -133,6 +137,20 @@ def build_url(action, **kwargs):
     return '{}?{}'.format(BASE_URL, urlencode(kwargs))
 
 
+def _int(value, default=0):
+    """int() for URL parameters — tolerant of junk from stale bookmarks."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _fail_directory():
+    """Terminate the pending directory listing, if any."""
+    if HANDLE >= 0:
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
+
+
 # ---------------------------------------------------------------------------
 # Search history
 # ---------------------------------------------------------------------------
@@ -148,9 +166,12 @@ def load_history():
 
 
 def save_history(history):
-    os.makedirs(PROFILE_DIR, exist_ok=True)
-    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(history[:MAX_HISTORY], f, ensure_ascii=False)
+    try:
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(history[:MAX_HISTORY], f, ensure_ascii=False)
+    except OSError:
+        pass
 
 
 def add_to_history(query):
@@ -456,7 +477,7 @@ def _build_search_queries(title, year='', season=None, episode=None):
     clean = re.sub(r'[^\w\s]', '', title).strip()
     queries = []
     if season is not None and episode is not None:
-        ep_tag = 'S{:02d}E{:02d}'.format(int(season), int(episode))
+        ep_tag = 'S{:02d}E{:02d}'.format(_int(season), _int(episode))
         queries.append('{} {}'.format(clean, ep_tag))
     if year:
         queries.append('{} {}'.format(clean, year))
@@ -629,12 +650,9 @@ def main_menu():
 def show_trending(page=1):
     tmdb = get_tmdb()
     if tmdb is None:
+        _fail_directory()
         return
-    try:
-        data = tmdb.trending(page=int(page))
-    except TMDBError as e:
-        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
-        return
+    data = tmdb.trending(page=_int(page, 1))
 
     xbmcplugin.setContent(HANDLE, 'videos')
     creds = prefetch_credits(data.get('results', []))
@@ -652,15 +670,12 @@ def show_trending(page=1):
 def show_movies(category, page=1):
     tmdb = get_tmdb()
     if tmdb is None:
+        _fail_directory()
         return
     method = {'now_playing': tmdb.movies_now_playing,
               'popular': tmdb.movies_popular,
               'top_rated': tmdb.movies_top_rated}
-    try:
-        data = method[category](page=int(page))
-    except TMDBError as e:
-        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
-        return
+    data = method[category](page=_int(page, 1))
 
     xbmcplugin.setContent(HANDLE, 'movies')
     creds = prefetch_credits(data.get('results', []), 'movie')
@@ -674,14 +689,11 @@ def show_movies(category, page=1):
 def show_tv(category, page=1):
     tmdb = get_tmdb()
     if tmdb is None:
+        _fail_directory()
         return
     method = {'popular': tmdb.tv_popular,
               'top_rated': tmdb.tv_top_rated}
-    try:
-        data = method[category](page=int(page))
-    except TMDBError as e:
-        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
-        return
+    data = method[category](page=_int(page, 1))
 
     xbmcplugin.setContent(HANDLE, 'tvshows')
     creds = prefetch_credits(data.get('results', []), 'tv')
@@ -699,13 +711,10 @@ def show_tv(category, page=1):
 def show_genres(media_type):
     tmdb = get_tmdb()
     if tmdb is None:
+        _fail_directory()
         return
-    try:
-        data = (tmdb.movie_genres() if media_type == 'movie'
-                else tmdb.tv_genres())
-    except TMDBError as e:
-        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
-        return
+    data = (tmdb.movie_genres() if media_type == 'movie'
+            else tmdb.tv_genres())
 
     xbmcplugin.setContent(HANDLE, 'videos')
     for genre in data.get('genres', []):
@@ -721,18 +730,15 @@ def show_genre_list(media_type, genre_id, genre_name, page=1,
                     sort_by='popularity.desc'):
     tmdb = get_tmdb()
     if tmdb is None:
+        _fail_directory()
         return
     discover_params = {'with_genres': genre_id, 'sort_by': sort_by}
     if sort_by == 'vote_average.desc':
         discover_params['vote_count.gte'] = 50
-    try:
-        if media_type == 'movie':
-            data = tmdb.discover_movies(page=int(page), **discover_params)
-        else:
-            data = tmdb.discover_tv(page=int(page), **discover_params)
-    except TMDBError as e:
-        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
-        return
+    if media_type == 'movie':
+        data = tmdb.discover_movies(page=_int(page, 1), **discover_params)
+    else:
+        data = tmdb.discover_tv(page=_int(page, 1), **discover_params)
 
     content = 'movies' if media_type == 'movie' else 'tvshows'
     xbmcplugin.setContent(HANDLE, content)
@@ -781,22 +787,19 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
     """Show movies or TV shows from a specific year using TMDB discover."""
     tmdb = get_tmdb()
     if tmdb is None:
+        _fail_directory()
         return
     discover_params = {'sort_by': sort_by}
     if sort_by == 'vote_average.desc':
         discover_params['vote_count.gte'] = 50
     if media_type == 'movie':
-        discover_params['primary_release_year'] = int(year)
+        discover_params['primary_release_year'] = _int(year)
     else:
-        discover_params['first_air_date_year'] = int(year)
-    try:
-        if media_type == 'movie':
-            data = tmdb.discover_movies(page=int(page), **discover_params)
-        else:
-            data = tmdb.discover_tv(page=int(page), **discover_params)
-    except TMDBError as e:
-        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
-        return
+        discover_params['first_air_date_year'] = _int(year)
+    if media_type == 'movie':
+        data = tmdb.discover_movies(page=_int(page, 1), **discover_params)
+    else:
+        data = tmdb.discover_tv(page=_int(page, 1), **discover_params)
 
     content = 'movies' if media_type == 'movie' else 'tvshows'
     xbmcplugin.setContent(HANDLE, content)
@@ -1083,13 +1086,10 @@ def show_tv_detail(tmdb_id, title, year):
     """Show TV series seasons."""
     tmdb = get_tmdb()
     if tmdb is None:
+        _fail_directory()
         return
 
-    try:
-        detail = tmdb.tv_detail(tmdb_id)
-    except TMDBError as e:
-        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
-        return
+    detail = tmdb.tv_detail(tmdb_id)
 
     xbmcplugin.setContent(HANDLE, 'seasons')
     series_title = detail.get('name') or title
@@ -1137,16 +1137,13 @@ def show_tv_season(tmdb_id, season, title, original_title=''):
     """Show episodes in a season."""
     tmdb = get_tmdb()
     if tmdb is None:
+        _fail_directory()
         return
 
-    try:
-        data = tmdb.tv_season(tmdb_id, int(season))
-    except TMDBError as e:
-        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
-        return
+    snum = _int(season, 1)
+    data = tmdb.tv_season(tmdb_id, snum)
 
     xbmcplugin.setContent(HANDLE, 'episodes')
-    snum = int(season)
 
     for ep in data.get('episodes', []):
         enum = ep.get('episode_number', 0)
@@ -1202,7 +1199,7 @@ def show_episode_info(tmdb_id, season, episode, title, show_title=''):
     Same shape as show_movie_info — see there for why this must not run while
     Kodi is waiting on us.
     """
-    snum, enum = int(season), int(episode)
+    snum, enum = _int(season, 1), _int(episode, 1)
     if HANDLE >= 0:
         _play_best(title, season=snum, episode=enum)
         return
@@ -1262,13 +1259,10 @@ def search_input():
 def do_search(query, page=1):
     tmdb = get_tmdb()
     if tmdb is None:
+        _fail_directory()
         return
 
-    try:
-        data = tmdb.search_multi(query, page=int(page))
-    except TMDBError as e:
-        xbmcgui.Dialog().ok('TMDB Chyba', str(e))
-        return
+    data = tmdb.search_multi(query, page=_int(page, 1))
 
     xbmcplugin.setContent(HANDLE, 'videos')
     creds = prefetch_credits(data.get('results', []))
@@ -1298,14 +1292,11 @@ def ws_search_input():
 def do_ws_search(query, offset=0):
     ws = get_webshare()
     if ws is None:
+        _fail_directory()
         return
 
     limit = 25
-    try:
-        results, total = ws.search(query, offset=int(offset), limit=limit)
-    except WebshareAPIError as e:
-        xbmcgui.Dialog().ok('Webshare.cz - Chyba', str(e))
-        return
+    results, total = ws.search(query, offset=_int(offset), limit=limit)
 
     xbmcplugin.setContent(HANDLE, 'videos')
     for item in results:
@@ -1321,7 +1312,7 @@ def do_ws_search(query, offset=0):
         url = build_url('play', ident=item['ident'], name=name)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
 
-    current_offset = int(offset)
+    current_offset = _int(offset)
     if current_offset + limit < total:
         li = xbmcgui.ListItem('Ďalšia strana ({}/{})'.format(
             (current_offset // limit) + 2, (total + limit - 1) // limit))
@@ -1376,10 +1367,7 @@ def clear_history():
 # Router
 # ---------------------------------------------------------------------------
 
-def router():
-    params = dict(parse_qsl(sys.argv[2][1:]))
-    action = params.get('action')
-
+def _dispatch(action, params):
     if action is None:
         main_menu()
 
@@ -1413,6 +1401,8 @@ def router():
             show_genre_list(mt, params.get('genre_id', ''),
                             params.get('genre_name', ''),
                             page=1, sort_by=new_sort)
+        else:
+            _fail_directory()
     elif action == 'years_movies':
         show_years('movie')
     elif action == 'years_tv':
@@ -1428,6 +1418,8 @@ def router():
         if new_sort:
             show_year_list(mt, params.get('year', ''),
                            page=1, sort_by=new_sort)
+        else:
+            _fail_directory()
 
     # TMDB detail
     elif action == 'movie_info':
@@ -1497,6 +1489,26 @@ def router():
 
     else:
         main_menu()
+
+
+def router():
+    params = dict(parse_qsl(sys.argv[2][1:] if len(sys.argv) > 2 else ''))
+    action = params.get('action')
+    try:
+        _dispatch(action, params)
+    except (TMDBError, WebshareAPIError) as e:
+        # A notification, not a modal: Kodi may be holding its busy dialog
+        # open while it waits for this listing.
+        xbmcgui.Dialog().notification('Webshare.cz', str(e),
+                                      xbmcgui.NOTIFICATION_ERROR)
+        _fail_directory()
+    except Exception:
+        xbmc.log('plugin.video.webshare: unhandled error in action {}\n{}'
+                 .format(action, traceback.format_exc()), xbmc.LOGERROR)
+        xbmcgui.Dialog().notification('Webshare.cz',
+                                      'Neočakávaná chyba (detaily v kodi.log)',
+                                      xbmcgui.NOTIFICATION_ERROR)
+        _fail_directory()
 
 
 if __name__ == '__main__':

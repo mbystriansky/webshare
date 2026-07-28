@@ -27,8 +27,9 @@ def md5crypt(password, salt):
     if salt.startswith(MAGIC):
         salt = salt[len(MAGIC):]
 
-    # Truncate salt to 8 characters
-    salt = salt[:8]
+    # Salt ends at '$' (a full crypt string carries the hash after it),
+    # and is at most 8 characters
+    salt = salt.split(b'$', 1)[0][:8]
 
     ctx = hashlib.md5(password + MAGIC + salt)
 

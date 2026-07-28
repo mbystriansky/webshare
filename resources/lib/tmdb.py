@@ -6,6 +6,10 @@ import requests
 API_BASE = 'https://api.themoviedb.org/3'
 IMG_BASE = 'https://image.tmdb.org/t/p/'
 
+TIMEOUT = (5, 15)  # connect, read (seconds)
+
+_session = requests.Session()
+
 # Poradie jazykov, z ktorých sa doplní popis, keď v nastavenom jazyku chýba:
 # sk a cs si navzájom vypomôžu, angličtina je posledná záchrana
 FALLBACK_CHAINS = {
@@ -50,17 +54,29 @@ class TMDB:
         self.api_key = api_key
         self.language = language
 
+    def _redact(self, text):
+        """Bez API kľúča — chybové hlášky končia v kodi.logu."""
+        text = str(text)
+        return text.replace(self.api_key, '***') if self.api_key else text
+
     def _get(self, path, params=None):
         if not self.api_key:
             raise TMDBError('TMDB API kľúč nie je nastavený')
         p = {'api_key': self.api_key, 'language': self.language}
         if params:
             p.update(params)
-        resp = requests.get(API_BASE + path, params=p, timeout=15)
+        try:
+            resp = _session.get(API_BASE + path, params=p, timeout=TIMEOUT)
+        except requests.RequestException as e:
+            raise TMDBError('TMDB: chyba siete ({})'.format(self._redact(e)))
         if resp.status_code == 401:
             raise TMDBError('Neplatný TMDB API kľúč')
-        resp.raise_for_status()
-        return resp.json()
+        if resp.status_code >= 400:
+            raise TMDBError('TMDB: HTTP {} pre {}'.format(resp.status_code, path))
+        try:
+            return resp.json()
+        except ValueError:
+            raise TMDBError('TMDB: neplatná odpoveď pre {}'.format(path))
 
     def _fallback_langs(self):
         """Poradie náhradných jazykov podľa nastaveného primárneho jazyka."""
