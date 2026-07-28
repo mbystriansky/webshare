@@ -46,8 +46,11 @@ def _safe_int(text, default=0):
 
 
 class WebshareAPI:
-    def __init__(self, token=''):
+    def __init__(self, token='', device_uuid=''):
         self.token = token
+        # Webshare tracks download slots per device — a stable UUID keeps
+        # this installation counting as one device
+        self.device_uuid = device_uuid or str(uuid.uuid4())
 
     def _post(self, endpoint, data=None):
         url = API_BASE + endpoint + '/'
@@ -128,7 +131,9 @@ class WebshareAPI:
             size_mb = size_bytes / (1024 * 1024)
 
             img = f.findtext('img', '')
-            if img and not img.startswith('http'):
+            if img.startswith('//'):
+                img = 'https:' + img
+            elif img and not img.startswith('http'):
                 img = 'https://webshare.cz/' + img.lstrip('/')
 
             results.append({
@@ -152,12 +157,11 @@ class WebshareAPI:
         Returns:
             Direct link URL string.
         """
-        device_uuid = str(uuid.uuid4())
         xml = self._post('file_link', {
             'ident': ident,
             'wst': self.token,
             'download_type': download_type,
-            'device_uuid': device_uuid,
+            'device_uuid': self.device_uuid,
             'force_https': 1,
         })
         self._check_status(xml, 'FileLink')

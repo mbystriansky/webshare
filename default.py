@@ -7,7 +7,8 @@ import os
 import re
 import sys
 import traceback
-from urllib.parse import parse_qsl, urlencode, quote_plus
+import uuid
+from urllib.parse import parse_qsl, urlencode
 
 import xbmc
 import xbmcaddon
@@ -110,6 +111,26 @@ def _cred_hash(username, password):
         '{}:{}'.format(username, password).encode('utf-8')).hexdigest()
 
 
+def _device_uuid():
+    """Stable per-installation device id for Webshare's slot tracking."""
+    path = os.path.join(PROFILE_DIR, 'device_uuid.txt')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            value = f.read().strip()
+        if value:
+            return value
+    except OSError:
+        pass
+    value = str(uuid.uuid4())
+    try:
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(value)
+    except OSError:
+        pass
+    return value
+
+
 class _WebshareClient:
     """WebshareAPI with a persisted token and one re-login on rejection.
 
@@ -122,7 +143,8 @@ class _WebshareClient:
     def __init__(self, username, password):
         self.username = username
         self.password = password
-        self.api = WebshareAPI(token=self._stored_token())
+        self.api = WebshareAPI(token=self._stored_token(),
+                               device_uuid=_device_uuid())
 
     def _stored_token(self):
         try:
@@ -408,11 +430,12 @@ def _movie_listitem(item, credits_=None):
         label += '  [COLOR gold]\u2605 {:.1f} ({:,})[/COLOR]'.format(rating, votes)
 
     li = xbmcgui.ListItem(label)
-    info = {'title': label, 'plot': item.get('overview', ''),
+    info = {'title': title, 'plot': item.get('overview', ''),
             'originaltitle': _usable_original(item.get('original_title')),
-            'year': int(year) if year.isdigit() else 0,
-            'rating': rating, 'votes': item.get('vote_count', 0),
+            'rating': rating, 'votes': str(item.get('vote_count', 0)),
             'mediatype': 'movie'}
+    if year.isdigit():
+        info['year'] = int(year)
     _apply_credits(li, credits_, info)
     li.setInfo('video', info)
 
@@ -437,11 +460,12 @@ def _tv_listitem(item, credits_=None):
         label += '  [COLOR gold]\u2605 {:.1f} ({:,})[/COLOR]'.format(rating, votes)
 
     li = xbmcgui.ListItem(label)
-    info = {'title': label, 'plot': item.get('overview', ''),
+    info = {'title': title, 'plot': item.get('overview', ''),
             'originaltitle': _usable_original(item.get('original_name')),
-            'year': int(year) if year.isdigit() else 0,
-            'rating': rating, 'votes': item.get('vote_count', 0),
+            'rating': rating, 'votes': str(item.get('vote_count', 0)),
             'mediatype': 'tvshow'}
+    if year.isdigit():
+        info['year'] = int(year)
     _apply_credits(li, credits_, info)
     li.setInfo('video', info)
 
@@ -523,10 +547,13 @@ def _pick_sort(media_type, current_sort='popularity.desc'):
     return options[idx][1]
 
 
+MAX_TMDB_PAGE = 500  # TMDB rejects page > 500 with HTTP 400
+
+
 def _add_page_items(data, action, extra_params=None):
-    """Add next/previous page navigation items."""
-    page = data.get('page', 1)
-    total = data.get('total_pages', 1)
+    """Add the next-page navigation item."""
+    page = _int(data.get('page', 1), 1)
+    total = min(_int(data.get('total_pages', 1), 1), MAX_TMDB_PAGE)
     params = extra_params or {}
     if page < total:
         li = xbmcgui.ListItem('Ďalšia strana ({}/{})'.format(page + 1, total))
@@ -540,7 +567,11 @@ def _add_page_items(data, action, extra_params=None):
 # ---------------------------------------------------------------------------
 
 def _build_search_queries(title, year='', season=None, episode=None):
-    """Build search queries for webshare from a title."""
+    """Build search queries for webshare from a title.
+
+    Diacritics are left alone: Webshare folds them server-side, so
+    'Želary' and 'Zelary' return identical results (verified).
+    """
     clean = re.sub(r'[^\w\s]', '', title).strip()
     queries = []
     if season is not None and episode is not None:
@@ -1033,7 +1064,8 @@ def show_stream_list(key):
                      query.get('season'), query.get('episode')) or []
     original = query.get('original', '')
     if not results and original and original.lower() != title.lower():
-        results = _quiet(_ws_collect_results, original, year) or []
+        results = _quiet(_ws_collect_results, original, year,
+                         query.get('season'), query.get('episode')) or []
 
     if not results:
         xbmcgui.Dialog().notification(
@@ -1332,6 +1364,7 @@ def do_search(query, page=1):
     data = tmdb.search_multi(query, page=_int(page, 1))
 
     xbmcplugin.setContent(HANDLE, 'videos')
+    added = 0
     creds = prefetch_credits(data.get('results', []))
     for item in data.get('results', []):
         mt = item.get('media_type', '')
@@ -1339,6 +1372,14 @@ def do_search(query, page=1):
             _add_movie_item(item, creds.get((mt, item['id'])))
         elif mt == 'tv':
             _add_tv_item(item, creds.get((mt, item['id'])))
+        else:
+            continue  # persons are not playable content
+        added += 1
+
+    if not added:
+        xbmcgui.Dialog().notification(
+            'Webshare.cz', 'Žiadne výsledky pre: {}'.format(query),
+            xbmcgui.NOTIFICATION_INFO)
 
     _add_page_items(data, 'tmdb_search', {'query': query})
     xbmcplugin.endOfDirectory(HANDLE)
@@ -1381,8 +1422,9 @@ def do_ws_search(query, offset=0):
 
     current_offset = _int(offset)
     if current_offset + limit < total:
-        li = xbmcgui.ListItem('Ďalšia strana ({}/{})'.format(
-            (current_offset // limit) + 2, (total + limit - 1) // limit))
+        # No page numbers: `total` counts non-video files too, so a
+        # computed page count would only mislead
+        li = xbmcgui.ListItem('Ďalšia strana')
         li.setArt({'icon': 'DefaultFolder.png'})
         url = build_url('ws_search', query=query, offset=current_offset + limit)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
@@ -1419,14 +1461,12 @@ def remove_history(query):
     if query in history:
         history.remove(query)
         save_history(history)
-    import xbmc
     xbmc.executebuiltin('Container.Refresh')
 
 
 def clear_history():
     if xbmcgui.Dialog().yesno('Webshare.cz', 'Vymazať celú históriu vyhľadávaní?'):
         save_history([])
-        import xbmc
         xbmc.executebuiltin('Container.Refresh')
 
 
@@ -1526,11 +1566,6 @@ def _dispatch(action, params):
                                   params.get('year', ''),
                                   params.get('season'),
                                   params.get('episode'))
-    elif action == 'ws_search_episode':
-        search_webshare_for_title(params.get('title', ''),
-                                  season=params.get('season'),
-                                  episode=params.get('episode'))
-
     # Webshare direct search
     elif action == 'ws_search_input':
         ws_search_input()

@@ -156,7 +156,9 @@ class TMDB:
         Discover pages differ slightly between languages, so an item is not
         guaranteed to appear in the fallback page at all.
         """
-        broken = [r for r in results if r.get('id') and self._needs_repair(r)]
+        broken = [r for r in results
+                  if r.get('id') and r.get('media_type') != 'person'
+                  and self._needs_repair(r)]
         if not broken or not self._fallback_langs():
             return
         from concurrent.futures import ThreadPoolExecutor
@@ -295,12 +297,6 @@ class TMDB:
         return data
 
     # --- Search ---
-
-    def search_movie(self, query, page=1):
-        return self._get_list('/search/movie', {'query': query, 'page': page})
-
-    def search_tv(self, query, page=1):
-        return self._get_list('/search/tv', {'query': query, 'page': page})
 
     def search_multi(self, query, page=1):
         return self._get_list('/search/multi', {'query': query, 'page': page})
