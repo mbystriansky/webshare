@@ -18,7 +18,7 @@ import xbmcvfs
 
 from resources.lib.cache import Cache
 from resources.lib.stream_parser import (
-    format_stream_label, parse_stream_info, sort_streams)
+    format_stream_label, parse_stream_info, sort_streams, title_relevance)
 from resources.lib.tmdb import TMDB, TMDBError, is_unrenderable
 from resources.lib.webshare import WebshareAPI, WebshareAPIError
 
@@ -659,23 +659,37 @@ def _ws_collect_results(title, year='', season=None, episode=None):
                 raise  # bad credentials, not a bad query
             continue
         for item in results:
-            if item['ident'] not in seen_idents:
-                name = item['name']
-                if any(name.lower().endswith(ext) for ext in VIDEO_EXTENSIONS):
-                    item['_parsed'] = parse_stream_info(name)
-                    all_results.append(item)
-                    seen_idents.add(item['ident'])
-    # Best first: resolution, then size — so the top of every picker and
-    # listing is the best file rather than whatever the API returned first
+            if item['ident'] in seen_idents:
+                continue
+            name = item['name']
+            if not any(name.lower().endswith(ext) for ext in VIDEO_EXTENSIONS):
+                continue
+            # Webshare matches loosely: a search for the title comes back
+            # with every file sharing a word with it
+            relevance = title_relevance(name, title, year, season, episode)
+            if relevance is None:
+                continue
+            item['_relevance'] = relevance
+            item['_parsed'] = parse_stream_info(name)
+            all_results.append(item)
+            seen_idents.add(item['ident'])
+    # Closest match first, best quality within that — so the top of every
+    # picker and listing is the file to play
     return sort_streams(all_results)
 
 
-def search_webshare_for_title(title, year='', season=None, episode=None):
+def search_webshare_for_title(title, original_title='', year='',
+                              season=None, episode=None):
     """Search webshare for a movie/episode title and list results as directory."""
     all_results = _ws_collect_results(title, year, season, episode)
     if all_results is None:
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
+
+    if not all_results and original_title \
+            and original_title.lower() != title.lower():
+        all_results = _ws_collect_results(original_title, year,
+                                          season, episode) or []
 
     if not all_results:
         # A notification, not a modal dialog: Kodi is still holding its busy
@@ -1228,7 +1242,8 @@ def show_tv_detail(tmdb_id, title, year):
     li = xbmcgui.ListItem('[B]{}[/B]'.format(L(30185)))
     li.setProperty('SpecialSort', 'bottom')
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
-    url = build_url('ws_search_title', title=series_title, year=year)
+    url = build_url('ws_search_title', title=series_title, year=year,
+                    original_title=_usable_original(original))
     xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
     xbmcplugin.endOfDirectory(HANDLE)
@@ -1565,6 +1580,7 @@ def _dispatch(action, params):
     # Webshare title search (from movie/tv detail)
     elif action == 'ws_search_title':
         search_webshare_for_title(params.get('title', ''),
+                                  params.get('original_title', ''),
                                   params.get('year', ''),
                                   params.get('season'),
                                   params.get('episode'))

@@ -7,6 +7,7 @@ another machine and never committed. Behaviour verified against the bytecode.
 """
 
 import re
+import unicodedata
 
 _TOKEN = r'(?:^|[\.\s\-_\[\(])'
 _END = r'(?:[\.\s\-_\]\)]|$)'
@@ -128,11 +129,117 @@ def parse_stream_info(filename):
     return info
 
 
+# --- Matching a file name against the title we searched for ---------------
+
+_WORDS_RE = re.compile(r'[^a-z0-9]+')
+
+# Every way a file name states which episode it holds
+_EP_TAG_RES = [
+    re.compile(r's(\d{1,2}) ?e(\d{1,3})'),
+    re.compile(r'(?<!\d)(\d{1,2})x(\d{2})(?!\d)'),
+    re.compile(r'(?:season|serie|seria|series) (\d{1,2}) '
+               r'(?:episode|epizoda|epizody|dil|cast|ep) (\d{1,3})'),
+]
+
+# Shortest word that may match by prefix, and how much two forms of the
+# same word may differ in length ('odhaleni' vs 'odhalenia')
+PREFIX_MIN = 4
+PREFIX_SLACK = 2
+
+
+def fold(text):
+    """Lowercase ASCII form of a title: 'Pelíšky' -> 'pelisky'."""
+    return unicodedata.normalize('NFKD', text or '') \
+        .encode('ascii', 'ignore').decode('ascii').lower()
+
+
+def _words(text):
+    return [w for w in _WORDS_RE.split(fold(text)) if w]
+
+
+def _word_matches(want, words):
+    """One title word against a file's words.
+
+    Near-identical forms count as the same word, so Slovak 'odhalenia' and
+    Czech 'odhaleni' are not treated as different films. The forms must be
+    within a couple of characters of each other: 'smrt' is its own word,
+    not a stand-in for 'smrtelne'.
+    """
+    if want in words:
+        return True
+    if len(want) < PREFIX_MIN:
+        return False
+    return any(len(w) >= PREFIX_MIN
+               and abs(len(w) - len(want)) <= PREFIX_SLACK
+               and (w.startswith(want) or want.startswith(w))
+               for w in words)
+
+
+def episode_tags(name):
+    """Every (season, episode) pair a file name announces, in any of the
+    notations releases use: S01E02, 1x02, 'Season 1 Episode 2'."""
+    flat = ' '.join(_words(name))
+    tags = set()
+    for pattern in _EP_TAG_RES:
+        for m in pattern.finditer(flat):
+            tags.add((int(m.group(1)), int(m.group(2))))
+    return tags
+
+
+def title_relevance(name, title, year='', season=None, episode=None):
+    """How well a Webshare file name matches what was searched for.
+
+    Returns None when the file is about something else — Webshare answers a
+    search for 'Smrtelné zlo: V plamenech' with 'Aljaška v plamenech' too,
+    and that must not be offered as the film — otherwise a rank:
+
+      3  every word of the title, and the year it was released
+      2  every word of the title
+      1  most of the title, or the title but another year
+
+    A file has to carry the title's most distinctive word — its longest —
+    plus half the words, and never fewer than two unless the title is a
+    single word. Requiring every word would throw away the many files that
+    drop a franchise prefix ('Mandalorian a Grogu' for 'Star Wars:
+    Mandalorian a Grogu'); requiring fewer lets one shared ordinary word
+    stand in for the film ('Autogrotesky - fantastický odhalení').
+    """
+    words = _words(name)
+    wanted = [w for w in _words(title) if len(w) > 1] or _words(title)
+    if not wanted:
+        return 2
+
+    if not _word_matches(max(wanted, key=len), words):
+        return None
+    hits = sum(1 for w in wanted if _word_matches(w, words))
+    if hits * 2 < len(wanted) or hits < min(2, len(wanted)):
+        return None
+
+    if season is not None and episode is not None:
+        tags = episode_tags(name)
+        if tags and (int(season), int(episode)) not in tags:
+            return None  # a different episode of the right series
+        if tags:
+            return 3
+
+    if hits < len(wanted):
+        return 1
+
+    named_years = {w for w in words
+                   if len(w) == 4 and w.isdigit() and 1900 < int(w) < 2100}
+    if not year or not named_years:
+        return 2
+    # A file naming some other year is likely another film of the series
+    return 3 if str(year) in named_years else 1
+
+
 def sort_streams(results):
-    """Sort stream result dicts by resolution (desc), then size (desc)."""
+    """Sort stream dicts: closest to what was asked for first, then by
+    resolution and size (both desc)."""
     return sorted(
         results,
-        key=lambda r: (r.get('_parsed', {}).get('resolution_rank', 0),
+        key=lambda r: (r.get('_relevance', 3),
+                       r.get('_parsed', {}).get('resolution_rank', 0),
                        r.get('size_bytes', 0)),
         reverse=True)
 
