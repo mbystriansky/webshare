@@ -10,7 +10,9 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # Never cancel a run mid-publish: an interrupted run could deploy
+  # without tagging (or tag without bumping) and strand the pipeline
+  cancel-in-progress: false
 
 env:
   PLUGIN_ID: plugin.video.webshare
@@ -24,6 +26,21 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate sources
+        run: |
+          # Syntax-check every Python file that ships; a broken default.py
+          # must never reach auto-updating users
+          python3 -m compileall -q default.py resources/lib
+          # XML well-formedness of everything Kodi parses
+          python3 - <<'PYEOF'
+          import xml.etree.ElementTree as ET
+          for path in ('addon.xml',
+                       'resources/settings.xml',
+                       'repository.mbystriansky/addon.xml'):
+              ET.parse(path)
+              print(path, 'OK')
+          PYEOF
 
       - name: Read addon versions
         id: versions
@@ -41,7 +58,7 @@ jobs:
             echo "::error::Tag ${TAG} already exists. Bump addon.xml version manually before publishing again."
             exit 1
           fi
-          echo "Tag ${TAG} is free, will be created after build."
+          echo "Tag ${TAG} is free, will be created after deploy."
 
       - name: Build plugin ZIP
         run: |
@@ -54,7 +71,8 @@ jobs:
             --exclude='__pycache__' \
             --exclude='*.pyc' \
             --exclude='*.pyo' \
-            --exclude='CLAUDE.md' \
+            --exclude='*.md' \
+            --exclude='dist' \
             --exclude='.gitignore' \
             --exclude="${REPO_ID}" \
             ./ "$BUILD/${PLUGIN_ID}/"
@@ -69,21 +87,17 @@ jobs:
       - name: Generate addons.xml + checksum
         run: |
           python3 <<'PYEOF'
-          import xml.etree.ElementTree as ET
           import hashlib
           import os
-          plugin_id = os.environ['PLUGIN_ID']
+          import xml.etree.ElementTree as ET
+
           repo_id = os.environ['REPO_ID']
-          out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', '<addons>']
-          for addon_dir, path in [(plugin_id, 'addon.xml'), (repo_id, f'{repo_id}/addon.xml')]:
-              with open(path, 'r', encoding='utf-8') as f:
-                  content = f.read()
-              # Strip XML declaration to embed inside <addons>
-              if content.startswith('<?xml'):
-                  content = content.split('?>', 1)[1].lstrip()
-              out.append(content.rstrip())
-          out.append('</addons>')
-          xml = '\n'.join(out)
+          root = ET.Element('addons')
+          for path in ('addon.xml', f'{repo_id}/addon.xml'):
+              root.append(ET.parse(path).getroot())
+          ET.indent(root)
+          xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                 + ET.tostring(root, encoding='unicode'))
           with open('dist/addons.xml', 'w', encoding='utf-8') as f:
               f.write(xml)
           md5 = hashlib.md5(xml.encode('utf-8')).hexdigest()
@@ -171,14 +185,40 @@ jobs:
         with:
           path: dist
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Git bookkeeping runs only after a successful deploy, so a failed
+  # push can never block the publish or strand a tag pointing at an
+  # undeployed version.
+  release:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Tag released version
+        id: tag
         run: |
-          TAG="v${{ steps.versions.outputs.plugin }}"
+          VERSION=$(python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('addon.xml').getroot().get('version'))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          TAG="v${VERSION}"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
 
@@ -206,16 +246,5 @@ jobs:
           print(f'Bumped {current} -> {new_version}')
           PYEOF
           git add addon.xml
-          git commit -m "Bump addon version after v${{ steps.versions.outputs.plugin }} release"
+          git commit -m "Bump addon version after v${{ steps.tag.outputs.version }} release"
           git push
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
