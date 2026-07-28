@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="repository.mbystriansky"
        name="mbystriansky Repository"
-       version="1.0.0"
+       version="1.0.1"
        provider-name="mbystriansky">
     <extension point="xbmc.addon.repository" name="mbystriansky Repository">
         <dir>
@@ -17,5 +17,9 @@
         <description lang="en">Repository hosting the Webshare.cz Kodi plugin with auto-updates.</description>
         <platform>all</platform>
         <license>MIT</license>
+        <source>https://github.com/mbystriansky/webshare</source>
+        <assets>
+            <icon>icon.png</icon>
+        </assets>
     </extension>
 </addon>

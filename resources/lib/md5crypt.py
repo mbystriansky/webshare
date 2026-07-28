@@ -1,5 +1,9 @@
 # MD5-based password crypt implementation (BSD-style $1$ prefix)
 # Compatible with passlib.hash.md5_crypt
+#
+# The $1$ scheme was designed by Poul-Henning Kamp for FreeBSD
+# (crypt-md5.c, "beer-ware" license). This is an independent Python
+# port of the published algorithm; see the project LICENSE file.
 
 import hashlib
 

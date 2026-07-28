@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.webshare"
        name="Webshare.cz"
-       version="2.0.7"
-       provider-name="webshare">
+       version="2.1.0"
+       provider-name="mbystriansky">
     <requires>
-        <import addon="xbmc.python" version="3.0.0"/>
+        <import addon="xbmc.python" version="3.0.1"/>
         <import addon="script.module.requests" version="2.22.0"/>
     </requires>
     <extension point="xbmc.python.pluginsource" library="default.py">
@@ -16,7 +16,17 @@
         <summary lang="en">Movies and TV shows from TMDB + Webshare.cz</summary>
         <description lang="sk">Prehľadávajte katalóg filmov a seriálov z TMDB a streamujte z Webshare.cz. Trending, novinky, žánre, vyhľadávanie a viac.</description>
         <description lang="en">Browse movies and TV shows from TMDB and stream from Webshare.cz. Trending, new releases, genres, search and more.</description>
+        <disclaimer lang="sk">Vyžaduje účet Webshare.cz (VIP) a TMDB API kľúč. Doplnok nie je pridružený k Webshare.cz ani TMDB.</disclaimer>
+        <disclaimer lang="en">Requires a Webshare.cz (VIP) account and a TMDB API key. This addon is not affiliated with Webshare.cz or TMDB.</disclaimer>
+        <language>sk en</language>
         <platform>all</platform>
         <license>MIT</license>
+        <source>https://github.com/mbystriansky/webshare</source>
+        <website>https://mbystriansky.github.io/webshare/</website>
+        <assets>
+            <icon>resources/icon.png</icon>
+            <fanart>resources/fanart.jpg</fanart>
+        </assets>
+        <news>v2.1.0 — stabilita (timeouty, ošetrenie chýb siete), rýchlejšia navigácia (cache TMDB, uložený Webshare token), triedenie streamov podľa kvality (rozlíšenie/HDR/dabing), InfoTagVideo metadáta + IMDB id pre titulky, lokalizácia sk/en, nové nastavenia (typ streamu, región, vymazanie cache), ikona a fanart.</news>
     </extension>
 </addon>
