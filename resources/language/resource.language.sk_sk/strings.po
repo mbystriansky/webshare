@@ -167,13 +167,9 @@ msgctxt "#30140"
 msgid "Play - choose a file"
 msgstr "Prehrať – vybrať súbor"
 
-msgctxt "#30141"
-msgid "Browse files on Webshare"
-msgstr "Prehliadať súbory na Webshare"
-
 msgctxt "#30142"
-msgid "Browse files (original title)"
-msgstr "Prehliadať súbory (originál)"
+msgid "Play - choose a file (original title)"
+msgstr "Prehrať – vybrať súbor (originálny názov)"
 
 msgctxt "#30143"
 msgid "Play in original quality"

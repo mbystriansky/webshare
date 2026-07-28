@@ -38,11 +38,6 @@ CREDITS_CACHE_FILE = os.path.join(PROFILE_DIR, 'credits_cache.json')
 CREDITS_CACHE_MAX = 600
 CREDITS_WORKERS = 10
 
-# Webshare hits collected when an info screen opens, so its Play button can
-# offer them without searching again
-STREAMS_CACHE_FILE = os.path.join(PROFILE_DIR, 'stream_lists.json')
-STREAMS_CACHE_MAX = 20
-
 VIDEO_EXTENSIONS = (
     '.avi', '.mkv', '.mp4', '.m4v', '.mov', '.wmv', '.flv',
     '.mpg', '.mpeg', '.ts', '.vob', '.divx', '.webm', '.3gp',
@@ -381,9 +376,8 @@ def _set_video_info(li, info, cast_=None):
     """Fill the item's InfoTagVideo — the Kodi 20+ replacement for the
     deprecated ListItem.setInfo()/setCast().
 
-    `info` is the same plain dict the plugin has always built (and stores
-    in stream_lists.json); `cast_` is a list of dicts with
-    name/role/thumbnail/order.
+    `info` is the same plain dict the plugin has always built; `cast_` is a
+    list of dicts with name/role/thumbnail/order.
     """
     tag = li.getVideoInfoTag()
     if info.get('mediatype'):
@@ -444,9 +438,9 @@ def _usable_original(title):
     return '' if is_unrenderable(title) else (title or '')
 
 
-def _search_context_items(title, original='', year='', season=None, episode=None,
-                          browse_url=''):
-    """Context menu entries for playing / browsing webshare files."""
+def _search_context_items(title, original='', year='', season=None,
+                          episode=None):
+    """Context menu entries for picking a webshare file to play."""
     original = _usable_original(original)
     extra = {}
     if season is not None and episode is not None:
@@ -455,13 +449,11 @@ def _search_context_items(title, original='', year='', season=None, episode=None
         (L(30140), 'RunPlugin({})'.format(
             build_url('play_pick', title=title, original_title=original,
                       year=year, **extra))),
-        (L(30141), 'Container.Update({})'.format(
-            browse_url or build_url('ws_search_title', title=title, year=year,
-                                    **extra))),
     ]
     if original and original.lower() != title.lower():
-        items.append((L(30142), 'Container.Update({})'.format(
-            build_url('ws_search_title', title=original, year=year, **extra))))
+        # Webshare names files by the original title at least as often
+        items.append((L(30142), 'RunPlugin({})'.format(
+            build_url('play_pick', title=original, year=year, **extra))))
     return items
 
 
@@ -500,9 +492,7 @@ def _movie_listitem(item, credits_=None):
     fanart = TMDB.fanart_url(item.get('backdrop_path'))
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
     li.addContextMenuItems(_search_context_items(
-        title, item.get('original_title', ''), year,
-        browse_url=build_url('movie_detail', tmdb_id=item.get('id', ''),
-                             title=title, year=year)))
+        title, item.get('original_title', ''), year))
     return li, title, year
 
 
@@ -675,8 +665,8 @@ def _ws_collect_results(title, year='', season=None, episode=None):
                     item['_parsed'] = parse_stream_info(name)
                     all_results.append(item)
                     seen_idents.add(item['ident'])
-    # Best first: resolution, then size — so "just play it" flows
-    # (_play_best, the top of every listing) grab the best file
+    # Best first: resolution, then size — so the top of every picker and
+    # listing is the best file rather than whatever the API returned first
     return sort_streams(all_results)
 
 
@@ -697,6 +687,12 @@ def search_webshare_for_title(title, year='', season=None, episode=None):
         return
 
     _render_stream_list(all_results, {}, {}, [])
+
+
+def _cancel_playback():
+    """Tell Kodi no URL is coming, when it is waiting for one."""
+    if HANDLE >= 0:
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 
 def _download_type():
@@ -761,14 +757,17 @@ def play_webshare(ident, name=''):
 def play_pick(title, original_title='', year='', season=None, episode=None):
     """Search webshare, let the user pick a file in a dialog and play it.
 
-    Runs from context menus via RunPlugin, so no plugin handle is involved
-    and Kodi is not waiting on a resolved URL.
+    Reached two ways, and both end here: from a context menu via RunPlugin
+    (no handle, so the file is handed to xbmc.Player), and as the path of a
+    playable item — the info screen's Play button — where Kodi is waiting
+    for a resolved URL and gets one once the user has chosen.
     """
     progress = xbmcgui.DialogProgressBG()
     progress.create('Webshare.cz', L(30167).format(title))
     try:
         results = _ws_collect_results(title, year, season, episode)
         if results is None:
+            _cancel_playback()
             return
         if not results and original_title \
                 and original_title.lower() != title.lower():
@@ -779,6 +778,7 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
         progress.close()
 
     if not results:
+        _cancel_playback()
         xbmcgui.Dialog().ok('Webshare.cz', L(30163).format(title))
         return
 
@@ -786,13 +786,19 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
     for r in results:
         li = xbmcgui.ListItem(r['name'])
         li.setLabel2(format_stream_label(r))
+        li.setArt({'thumb': r['img']})
         choices.append(li)
     idx = xbmcgui.Dialog().select(L(30169).format(title), choices,
                                   useDetails=True)
     if idx < 0:
+        _cancel_playback()
         return
 
-    _play_direct(results[idx]['ident'], results[idx]['name'])
+    chosen = results[idx]
+    if HANDLE >= 0:
+        play_webshare(chosen['ident'], chosen['name'])
+    else:
+        _play_direct(chosen['ident'], chosen['name'])
 
 
 # ---------------------------------------------------------------------------
@@ -1042,54 +1048,6 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc',
 # Movie / TV detail
 # ---------------------------------------------------------------------------
 
-def _save_stream_list(key, title, query, info, art, cast_):
-    """Remember what an info screen knows, for its Browse button to use.
-
-    Only what TMDB gave us and what to search Webshare for — the search
-    itself waits until Browse is actually pressed.
-    """
-    try:
-        with open(STREAMS_CACHE_FILE, 'r', encoding='utf-8') as f:
-            store = json.load(f)
-        if not isinstance(store, dict):
-            store = {}
-    except (IOError, OSError, ValueError):
-        store = {}
-
-    store.pop(key, None)
-    store[key] = {'title': title, 'query': query, 'info': info,
-                  'art': art, 'cast': cast_}
-    for old in list(store)[:len(store) - STREAMS_CACHE_MAX]:
-        del store[old]
-    try:
-        _atomic_write_json(STREAMS_CACHE_FILE, store)
-    except OSError:
-        pass
-
-
-def _load_stream_list(key):
-    """Return the entry stored by _save_stream_list, or an empty one."""
-    try:
-        with open(STREAMS_CACHE_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f).get(key) or {}
-    except (IOError, OSError, ValueError, AttributeError):
-        return {}
-
-
-def _play_best(title, year='', season=None, episode=None):
-    """Kodi asked to play an info screen's URL outright — play the best match.
-
-    Reached through Kodi's own Play entry or a favourite. It is waiting for a
-    URL, so nothing here may open a dialog: asking which file to use crashes
-    Kodi on Android, and declining makes it report a failed playback.
-    """
-    results = _quiet(_ws_collect_results, title, year, season, episode) or []
-    if not results:
-        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
-        return
-    play_webshare(results[0]['ident'], results[0]['name'])
-
-
 def _quiet(fn, *args):
     """Run fn, turning a network or API failure into no data.
 
@@ -1104,18 +1062,17 @@ def _quiet(fn, *args):
         return None
 
 
-def _info_listitem(label, browse_url, info, art, cast_):
-    """An item whose info screen offers Browse instead of Play.
+def _info_listitem(label, play_url, info, art, cast_):
+    """A playable item for Kodi's info screen.
 
-    Kodi's info screen only offers Browse — which follows the item's path
-    instead of playing it — for a folder holding a series. Play would make
-    Kodi resolve a URL and wait for it, and neither asking which file to use
-    nor declining the resolve is possible inside that wait: a dialog there
-    crashes Kodi on Android, and declining raises "Playback failed".
+    Its Play button follows the path, which searches Webshare and offers the
+    files it found — the same picker the context menu opens. Kodi waits for a
+    resolved URL the whole time, so that path must always answer: with the
+    chosen file, or with a declined resolve (see _cancel_playback).
     """
-    li = xbmcgui.ListItem(label, path=browse_url)
-    li.setIsFolder(True)
-    _set_video_info(li, dict(info, mediatype='tvshow'), cast_)
+    li = xbmcgui.ListItem(label, path=play_url)
+    li.setProperty('IsPlayable', 'true')
+    _set_video_info(li, info, cast_)
     if art:
         li.setArt(art)
     return li
@@ -1147,45 +1104,6 @@ def _render_stream_list(results, info, art, cast_):
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_SIZE)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_LABEL)
     xbmcplugin.endOfDirectory(HANDLE)
-
-
-def show_stream_list(key):
-    """Search Webshare for a title's files — an info screen's Browse lands here.
-
-    The search waits until now so that merely looking at an info screen costs
-    nothing. This is a directory listing, so Kodi is waiting on us and no
-    dialog of ours may open here; searching, however, is exactly what Kodi
-    expects a listing to spend its time on.
-    """
-    entry = _load_stream_list(key)
-    query = entry.get('query') or {}
-    if not query:
-        # Only reachable from an info screen, which always stores this first,
-        # so getting here means a stale bookmark or an evicted entry.
-        xbmcgui.Dialog().notification(
-            'Webshare.cz', L(30166), xbmcgui.NOTIFICATION_INFO)
-        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
-        return
-
-    title = query.get('title', '')
-    year = query.get('year', '')
-    results = _quiet(_ws_collect_results, title, year,
-                     query.get('season'), query.get('episode')) or []
-    original = query.get('original', '')
-    if not results and original and original.lower() != title.lower():
-        results = _quiet(_ws_collect_results, original, year,
-                         query.get('season'), query.get('episode')) or []
-
-    if not results:
-        xbmcgui.Dialog().notification(
-            'Webshare.cz',
-            L(30164).format(entry.get('title', '') or title),
-            xbmcgui.NOTIFICATION_INFO)
-        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
-        return
-
-    _render_stream_list(results, entry.get('info') or {},
-                        entry.get('art') or {}, entry.get('cast') or [])
 
 
 def _movie_info_dict(detail, title, year):
@@ -1235,14 +1153,17 @@ def _fetch_movie_detail(tmdb_id):
 
 
 def show_movie_info(tmdb_id, title, year):
-    """Open Kodi's info screen for a movie, with its files already collected.
+    """Open Kodi's info screen for a movie.
 
     Reached by clicking a non-folder, non-playable list item, so Kodi runs us
     as a script rather than waiting for us — no busy dialog is up and opening
-    the info screen here is safe. Browse there searches for the files.
+    the info screen here is safe. Its Play button picks a file to play.
+
+    A stale favourite can still invoke this as a playable path; then Kodi is
+    waiting for a URL, so go straight to the picker.
     """
     if HANDLE >= 0:
-        _play_best(title, year)
+        play_pick(title, year=year)
         return
 
     progress = xbmcgui.DialogProgressBG()
@@ -1253,46 +1174,13 @@ def show_movie_info(tmdb_id, title, year):
         progress.close()
 
     info, art, cast_ = _movie_info_dict(detail, title, year)
-    key = 'movie:{}'.format(tmdb_id)
-    _save_stream_list(key, info['title'],
-                      {'title': info['title'],
-                       'year': (detail.get('release_date') or '')[:4] or year,
-                       'original': _usable_original(
-                           detail.get('original_title'))},
-                      info, art, cast_)
+    play_url = build_url(
+        'play_pick', title=info['title'],
+        original_title=_usable_original(detail.get('original_title')),
+        year=(detail.get('release_date') or '')[:4] or year)
 
-    li = _info_listitem(info['title'], build_url('stream_list', key=key),
-                        info, art, cast_)
+    li = _info_listitem(info['title'], play_url, info, art, cast_)
     xbmcgui.Dialog().info(li)
-
-
-def show_movie_detail(tmdb_id, title, year):
-    """Search Webshare for a movie and list the files, with TMDB metadata.
-
-    The context-menu route into the same listing the info screen browses to;
-    unlike that one it always searches, so it works from a favourite too.
-    """
-    detail = _quiet(_fetch_movie_detail, tmdb_id) or {}
-    play_title = detail.get('title') or title
-    play_year = (detail.get('release_date') or '')[:4] or year
-    original = _usable_original(detail.get('original_title'))
-
-    results = _quiet(_ws_collect_results, play_title, play_year)
-    if results is None:
-        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
-        return
-    if not results and original and original.lower() != play_title.lower():
-        results = _quiet(_ws_collect_results, original, play_year) or []
-
-    if not results:
-        xbmcgui.Dialog().notification(
-            'Webshare.cz', L(30164).format(play_title),
-            xbmcgui.NOTIFICATION_INFO)
-        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
-        return
-
-    info, art, cast_ = _movie_info_dict(detail, title, year)
-    _render_stream_list(results, info, art, cast_)
 
 
 def show_tv_detail(tmdb_id, title, year):
@@ -1404,14 +1292,13 @@ def _fetch_episode(tmdb_id, season, episode):
 
 
 def show_episode_info(tmdb_id, season, episode, title, show_title=''):
-    """Open Kodi's info screen for one episode, files already collected.
+    """Open Kodi's info screen for one episode.
 
-    Same shape as show_movie_info — see there for why this must not run while
-    Kodi is waiting on us.
+    Same shape as show_movie_info — see there.
     """
     snum, enum = _int(season, 1), _int(episode, 1)
     if HANDLE >= 0:
-        _play_best(title, season=snum, episode=enum)
+        play_pick(title, season=snum, episode=enum)
         return
 
     tag = 'S{:02d}E{:02d}'.format(snum, enum)
@@ -1443,13 +1330,8 @@ def show_episode_info(tmdb_id, season, episode, title, show_title=''):
     still = TMDB.fanart_url(detail.get('still_path'), 'w780')
     art = {'thumb': still, 'fanart': still} if still else {}
 
-    key = 'ep:{}:{}:{}'.format(tmdb_id, snum, enum)
-    _save_stream_list(key, name,
-                      {'title': title, 'season': snum, 'episode': enum},
-                      info, art, cast_)
-
-    li = _info_listitem(info['title'], build_url('stream_list', key=key),
-                        info, art, cast_)
+    play_url = build_url('play_pick', title=title, season=snum, episode=enum)
+    li = _info_listitem(info['title'], play_url, info, art, cast_)
     xbmcgui.Dialog().info(li)
 
 
@@ -1588,11 +1470,10 @@ def clear_history():
 def clear_cache():
     """Wipe cached TMDB data (settings button). History stays."""
     Cache(TMDB_CACHE_DIR).prune(0)
-    for path in (CREDITS_CACHE_FILE, STREAMS_CACHE_FILE):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    try:
+        os.remove(CREDITS_CACHE_FILE)
+    except OSError:
+        pass
     xbmcgui.Dialog().notification('Webshare.cz', L(30175),
                                   xbmcgui.NOTIFICATION_INFO)
 
@@ -1666,12 +1547,6 @@ def _dispatch(action, params):
                           params.get('episode', 1),
                           params.get('title', ''),
                           params.get('show_title', ''))
-    elif action == 'stream_list':
-        show_stream_list(params.get('key', ''))
-    elif action == 'movie_detail':
-        show_movie_detail(params.get('tmdb_id'),
-                          params.get('title', ''),
-                          params.get('year', ''))
     elif action == 'tv_detail':
         show_tv_detail(params.get('tmdb_id'),
                        params.get('title', ''),

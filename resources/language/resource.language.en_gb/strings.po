@@ -166,12 +166,8 @@ msgctxt "#30140"
 msgid "Play - choose a file"
 msgstr ""
 
-msgctxt "#30141"
-msgid "Browse files on Webshare"
-msgstr ""
-
 msgctxt "#30142"
-msgid "Browse files (original title)"
+msgid "Play - choose a file (original title)"
 msgstr ""
 
 msgctxt "#30143"
