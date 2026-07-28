@@ -278,3 +278,19 @@ msgstr "Epizóda {}"
 msgctxt "#30185"
 msgid "Search the whole series on Webshare"
 msgstr "Hľadať celý seriál na Webshare"
+
+msgctxt "#30186"
+msgid "Maximum resolution (higher files sort last)"
+msgstr "Maximálne rozlíšenie (súbory nad limit idú na koniec)"
+
+msgctxt "#30187"
+msgid "No limit"
+msgstr "Bez limitu"
+
+msgctxt "#30188"
+msgid "1080p"
+msgstr "1080p"
+
+msgctxt "#30189"
+msgid "720p"
+msgstr "720p"

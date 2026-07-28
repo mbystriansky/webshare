@@ -277,3 +277,19 @@ msgstr ""
 msgctxt "#30185"
 msgid "Search the whole series on Webshare"
 msgstr ""
+
+msgctxt "#30186"
+msgid "Maximum resolution (higher files sort last)"
+msgstr ""
+
+msgctxt "#30187"
+msgid "No limit"
+msgstr ""
+
+msgctxt "#30188"
+msgid "1080p"
+msgstr ""
+
+msgctxt "#30189"
+msgid "720p"
+msgstr ""

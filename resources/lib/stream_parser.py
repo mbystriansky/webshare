@@ -233,15 +233,18 @@ def title_relevance(name, title, year='', season=None, episode=None):
     return 3 if str(year) in named_years else 1
 
 
-def sort_streams(results):
+def sort_streams(results, max_rank=0):
     """Sort stream dicts: closest to what was asked for first, then by
-    resolution and size (both desc)."""
-    return sorted(
-        results,
-        key=lambda r: (r.get('_relevance', 3),
-                       r.get('_parsed', {}).get('resolution_rank', 0),
-                       r.get('size_bytes', 0)),
-        reverse=True)
+    resolution and size (both desc). With max_rank set, streams above that
+    resolution rank sort below everything else — never hidden, so a title
+    that only exists in 4K stays playable."""
+    def key(r):
+        rank = r.get('_parsed', {}).get('resolution_rank', 0)
+        return (0 if max_rank and rank > max_rank else 1,
+                r.get('_relevance', 3),
+                rank,
+                r.get('size_bytes', 0))
+    return sorted(results, key=key, reverse=True)
 
 
 def format_stream_label(result):

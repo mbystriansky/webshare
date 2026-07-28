@@ -80,6 +80,20 @@
                         <heading>30011</heading>
                     </control>
                 </setting>
+                <setting id="max_resolution" type="string" label="30186">
+                    <level>0</level>
+                    <default>0</default>
+                    <constraints>
+                        <options>
+                            <option label="30187">0</option>
+                            <option label="30188">1080</option>
+                            <option label="30189">720</option>
+                        </options>
+                    </constraints>
+                    <control type="list" format="string">
+                        <heading>30186</heading>
+                    </control>
+                </setting>
             </group>
         </category>
         <category id="maintenance" label="30015">

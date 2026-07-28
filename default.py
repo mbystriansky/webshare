@@ -674,8 +674,9 @@ def _ws_collect_results(title, year='', season=None, episode=None):
             all_results.append(item)
             seen_idents.add(item['ident'])
     # Closest match first, best quality within that — so the top of every
-    # picker and listing is the file to play
-    return sort_streams(all_results)
+    # picker and listing is the file to play. Files over the device's
+    # resolution cap sort last (kept visible as a fallback).
+    return sort_streams(all_results, _max_resolution_rank())
 
 
 def search_webshare_for_title(title, original_title='', year='',
@@ -737,6 +738,14 @@ def _download_type():
     return ('file_download'
             if ADDON.getSetting('download_type') == 'file_download'
             else 'video_stream')
+
+
+_MAX_RESOLUTION_RANKS = {'1080': 3, '720': 2}
+
+
+def _max_resolution_rank():
+    """resolution_rank cap from the max_resolution setting, 0 = no limit."""
+    return _MAX_RESOLUTION_RANKS.get(ADDON.getSetting('max_resolution'), 0)
 
 
 def _stream_context_items(result):
