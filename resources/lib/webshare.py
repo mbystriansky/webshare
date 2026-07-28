@@ -129,6 +129,10 @@ class WebshareAPI:
         for f in xml.findall('file'):
             size_bytes = _safe_int(f.findtext('size', '0'))
             size_mb = size_bytes / (1024 * 1024)
+            if size_bytes >= 1024 ** 3:
+                size_str = '{:.1f} GB'.format(size_bytes / 1024 ** 3)
+            else:
+                size_str = '{:.0f} MB'.format(size_mb)
 
             img = f.findtext('img', '')
             if img.startswith('//'):
@@ -140,9 +144,12 @@ class WebshareAPI:
                 'name': f.findtext('name', ''),
                 'ident': f.findtext('ident', ''),
                 'size': size_mb,
-                'size_str': '{:.0f} MB'.format(size_mb),
+                'size_bytes': size_bytes,
+                'size_str': size_str,
                 'img': img,
                 'type': f.findtext('type', ''),
+                'positive_votes': _safe_int(f.findtext('positive_votes', '0')),
+                'negative_votes': _safe_int(f.findtext('negative_votes', '0')),
             })
 
         return results, total

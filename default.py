@@ -17,6 +17,8 @@ import xbmcplugin
 import xbmcvfs
 
 from resources.lib.cache import Cache
+from resources.lib.stream_parser import (
+    format_stream_label, parse_stream_info, sort_streams)
 from resources.lib.tmdb import TMDB, TMDBError, is_unrenderable
 from resources.lib.webshare import WebshareAPI, WebshareAPIError
 
@@ -607,9 +609,12 @@ def _ws_collect_results(title, year='', season=None, episode=None):
             if item['ident'] not in seen_idents:
                 name = item['name']
                 if any(name.lower().endswith(ext) for ext in VIDEO_EXTENSIONS):
+                    item['_parsed'] = parse_stream_info(name)
                     all_results.append(item)
                     seen_idents.add(item['ident'])
-    return all_results
+    # Best first: resolution, then size — so "just play it" flows
+    # (_play_best, the top of every listing) grab the best file
+    return sort_streams(all_results)
 
 
 def search_webshare_for_title(title, year='', season=None, episode=None):
@@ -700,8 +705,13 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
                             'Žiadne výsledky pre: {}'.format(title))
         return
 
-    labels = ['{} [{}]'.format(r['name'], r['size_str']) for r in results]
-    idx = xbmcgui.Dialog().select('Vyber súbor: {}'.format(title), labels)
+    choices = []
+    for r in results:
+        li = xbmcgui.ListItem(r['name'])
+        li.setLabel2(format_stream_label(r))
+        choices.append(li)
+    idx = xbmcgui.Dialog().select('Vyber súbor: {}'.format(title), choices,
+                                  useDetails=True)
     if idx < 0:
         return
 
@@ -1023,9 +1033,11 @@ def _render_stream_list(results, info, art, cast_):
     shared = {k: v for k, v in info.items() if k != 'duration'}
     for r in results:
         li = xbmcgui.ListItem(r['name'])
-        li.setLabel2(r['size_str'])
+        # Parsed quality summary (1080p | BluRay | CZ dabing | 8.5 GB)
+        # goes to label2; skins with a second line show it right away
+        li.setLabel2(format_stream_label(r))
         li.setInfo('video', dict(shared, title=r['name'],
-                                 size=int(r.get('size', 0) * 1024 * 1024)))
+                                 size=r.get('size_bytes', 0)))
         if cast_:
             li.setCast(cast_)
         li.setArt(dict(art, thumb=r['img'] or art.get('thumb', '')))
@@ -1412,7 +1424,8 @@ def do_ws_search(query, offset=0):
         if not any(name.lower().endswith(ext) for ext in VIDEO_EXTENSIONS):
             continue
         li = xbmcgui.ListItem(name)
-        li.setInfo('video', {'title': name, 'size': int(item['size'] * 1024 * 1024)})
+        li.setInfo('video', {'title': name,
+                             'size': item.get('size_bytes', 0)})
         li.setProperty('IsPlayable', 'true')
         if item['img']:
             li.setArt({'thumb': item['img'], 'icon': item['img']})
