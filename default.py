@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Kodi plugin for browsing TMDB catalogue and streaming from webshare.cz."""
 
+import hashlib
 import json
 import os
 import re
@@ -14,17 +15,19 @@ import xbmcgui
 import xbmcplugin
 import xbmcvfs
 
+from resources.lib.cache import Cache
 from resources.lib.tmdb import TMDB, TMDBError, is_unrenderable
 from resources.lib.webshare import WebshareAPI, WebshareAPIError
 
 ADDON = xbmcaddon.Addon()
-try:
-    HANDLE = int(sys.argv[1])
-except (IndexError, ValueError):
-    HANDLE = -1
-BASE_URL = sys.argv[0] if sys.argv else ''
+# Per-invocation values; router() refreshes them because with
+# reuselanguageinvoker the module lives across invocations
+HANDLE = -1
+BASE_URL = ''
 PROFILE_DIR = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
 HISTORY_FILE = os.path.join(PROFILE_DIR, 'search_history.json')
+WS_TOKEN_FILE = os.path.join(PROFILE_DIR, 'ws_token.json')
+TMDB_CACHE_DIR = os.path.join(PROFILE_DIR, 'cache')
 MAX_HISTORY = 20
 
 # Cast/crew shown in list items so Kodi's built-in info dialog has them
@@ -79,8 +82,6 @@ def _read_api_key_from_file():
 
 def get_tmdb():
     global _tmdb
-    if _tmdb is not None:
-        return _tmdb
 
     # 1) settings  2) file on disk
     api_key = ADDON.getSetting('tmdb_api_key') or _read_api_key_from_file()
@@ -98,15 +99,79 @@ def get_tmdb():
         if not api_key:
             return None
     lang = ADDON.getSetting('tmdb_language') or 'cs-CZ'
-    _tmdb = TMDB(api_key, language=lang)
+    if (_tmdb is None or _tmdb.api_key != api_key
+            or _tmdb.language != lang):
+        _tmdb = TMDB(api_key, language=lang, cache=Cache(TMDB_CACHE_DIR))
     return _tmdb
+
+
+def _cred_hash(username, password):
+    return hashlib.sha1(
+        '{}:{}'.format(username, password).encode('utf-8')).hexdigest()
+
+
+class _WebshareClient:
+    """WebshareAPI with a persisted token and one re-login on rejection.
+
+    The token webshare returns with keep_logged_in lives for weeks, so a
+    fresh login on every plugin invocation would be two wasted round-trips
+    per click. The stored token is tried first; only when the server turns
+    a request down is a login done and the token replaced.
+    """
+
+    def __init__(self, username, password):
+        self.username = username
+        self.password = password
+        self.api = WebshareAPI(token=self._stored_token())
+
+    def _stored_token(self):
+        try:
+            with open(WS_TOKEN_FILE, 'r', encoding='utf-8') as f:
+                stored = json.load(f)
+            if stored.get('creds') == _cred_hash(self.username, self.password):
+                return stored.get('token', '')
+        except (OSError, ValueError):
+            pass
+        return ''
+
+    def _login(self):
+        try:
+            self.api.login(self.username, self.password)
+        except WebshareAPIError as e:
+            if e.network:
+                raise
+            raise WebshareAPIError('Prihlásenie zlyhalo: {}'.format(e),
+                                   code='LOGIN_FAILED')
+        try:
+            _atomic_write_json(WS_TOKEN_FILE, {
+                'creds': _cred_hash(self.username, self.password),
+                'token': self.api.token,
+            })
+        except OSError:
+            pass
+
+    def _call(self, fn, *args, **kwargs):
+        if not self.api.token:
+            self._login()
+            return fn(*args, **kwargs)
+        try:
+            return fn(*args, **kwargs)
+        except WebshareAPIError as e:
+            if e.network:
+                raise
+            # Anything else may be an expired token — one login, one retry
+            self._login()
+            return fn(*args, **kwargs)
+
+    def search(self, *args, **kwargs):
+        return self._call(self.api.search, *args, **kwargs)
+
+    def get_file_link(self, *args, **kwargs):
+        return self._call(self.api.get_file_link, *args, **kwargs)
 
 
 def get_webshare():
     global _webshare
-    if _webshare is not None:
-        return _webshare
-    api = WebshareAPI()
     username = ADDON.getSetting('username')
     password = ADDON.getSetting('password')
     if not username or not password:
@@ -119,13 +184,10 @@ def get_webshare():
         password = ADDON.getSetting('password')
         if not username or not password:
             return None
-    try:
-        api.login(username, password)
-    except WebshareAPIError as e:
-        xbmcgui.Dialog().ok('Webshare.cz - Chyba', str(e))
-        return None
-    _webshare = api
-    return api
+    if (_webshare is None or _webshare.username != username
+            or _webshare.password != password):
+        _webshare = _WebshareClient(username, password)
+    return _webshare
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +213,15 @@ def _fail_directory():
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
 
 
+def _atomic_write_json(path, data):
+    """Write JSON so a concurrent run or a kill never leaves half a file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = '{}.{}.tmp'.format(path, os.getpid())
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
 # ---------------------------------------------------------------------------
 # Search history
 # ---------------------------------------------------------------------------
@@ -167,9 +238,7 @@ def load_history():
 
 def save_history(history):
     try:
-        os.makedirs(PROFILE_DIR, exist_ok=True)
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(history[:MAX_HISTORY], f, ensure_ascii=False)
+        _atomic_write_json(HISTORY_FILE, history[:MAX_HISTORY])
     except OSError:
         pass
 
@@ -201,10 +270,8 @@ def _save_credits_cache(cache):
         for key in list(cache)[:len(cache) - CREDITS_CACHE_MAX]:
             del cache[key]
     try:
-        os.makedirs(PROFILE_DIR, exist_ok=True)
-        with open(CREDITS_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache, f, ensure_ascii=False)
-    except (IOError, OSError):
+        _atomic_write_json(CREDITS_CACHE_FILE, cache)
+    except OSError:
         pass
 
 
@@ -251,7 +318,7 @@ def prefetch_credits(results, media_type=None):
         if cached is None:
             missing.append((mt, tid))
         else:
-            out[tid] = cached
+            out[(mt, tid)] = cached
 
     if missing:
         from concurrent.futures import ThreadPoolExecutor
@@ -269,7 +336,7 @@ def prefetch_credits(results, media_type=None):
             for entry, credits_ in pool.map(fetch, missing):
                 if credits_ is None:
                     continue
-                out[entry[1]] = credits_
+                out[entry] = credits_
                 cache[keys[entry]] = credits_
         _save_credits_cache(cache)
 
@@ -501,7 +568,9 @@ def _ws_collect_results(title, year='', season=None, episode=None):
     for query in queries:
         try:
             results, _ = ws.search(query, limit=50)
-        except WebshareAPIError:
+        except WebshareAPIError as e:
+            if e.code == 'LOGIN_FAILED':
+                raise  # bad credentials, not a bad query
             continue
         for item in results:
             if item['ident'] not in seen_idents:
@@ -659,9 +728,9 @@ def show_trending(page=1):
     for item in data.get('results', []):
         mt = item.get('media_type', 'movie')
         if mt == 'movie':
-            _add_movie_item(item, creds.get(item['id']))
+            _add_movie_item(item, creds.get((mt, item['id'])))
         elif mt == 'tv':
-            _add_tv_item(item, creds.get(item['id']))
+            _add_tv_item(item, creds.get((mt, item['id'])))
     _add_page_items(data, 'trending')
     _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
@@ -680,7 +749,7 @@ def show_movies(category, page=1):
     xbmcplugin.setContent(HANDLE, 'movies')
     creds = prefetch_credits(data.get('results', []), 'movie')
     for item in data.get('results', []):
-        _add_movie_item(item, creds.get(item['id']))
+        _add_movie_item(item, creds.get(('movie', item['id'])))
     _add_page_items(data, 'movies_' + category)
     _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
@@ -698,7 +767,7 @@ def show_tv(category, page=1):
     xbmcplugin.setContent(HANDLE, 'tvshows')
     creds = prefetch_credits(data.get('results', []), 'tv')
     for item in data.get('results', []):
-        _add_tv_item(item, creds.get(item['id']))
+        _add_tv_item(item, creds.get(('tv', item['id'])))
     _add_page_items(data, 'tv_' + category)
     _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
@@ -756,9 +825,9 @@ def show_genre_list(media_type, genre_id, genre_name, page=1,
     creds = prefetch_credits(data.get('results', []), media_type)
     for item in data.get('results', []):
         if media_type == 'movie':
-            _add_movie_item(item, creds.get(item['id']))
+            _add_movie_item(item, creds.get((media_type, item['id'])))
         else:
-            _add_tv_item(item, creds.get(item['id']))
+            _add_tv_item(item, creds.get((media_type, item['id'])))
     _add_page_items(data, 'genre_list',
                     {'media_type': media_type, 'genre_id': genre_id,
                      'genre_name': genre_name, 'sort_by': sort_by})
@@ -816,9 +885,9 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
     creds = prefetch_credits(data.get('results', []), media_type)
     for item in data.get('results', []):
         if media_type == 'movie':
-            _add_movie_item(item, creds.get(item['id']))
+            _add_movie_item(item, creds.get((media_type, item['id'])))
         else:
-            _add_tv_item(item, creds.get(item['id']))
+            _add_tv_item(item, creds.get((media_type, item['id'])))
     _add_page_items(data, 'year_list',
                     {'media_type': media_type, 'year': year,
                      'sort_by': sort_by})
@@ -850,10 +919,8 @@ def _save_stream_list(key, title, query, info, art, cast_):
     for old in list(store)[:len(store) - STREAMS_CACHE_MAX]:
         del store[old]
     try:
-        os.makedirs(PROFILE_DIR, exist_ok=True)
-        with open(STREAMS_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(store, f, ensure_ascii=False)
-    except (IOError, OSError):
+        _atomic_write_json(STREAMS_CACHE_FILE, store)
+    except OSError:
         pass
 
 
@@ -1269,9 +1336,9 @@ def do_search(query, page=1):
     for item in data.get('results', []):
         mt = item.get('media_type', '')
         if mt == 'movie':
-            _add_movie_item(item, creds.get(item['id']))
+            _add_movie_item(item, creds.get((mt, item['id'])))
         elif mt == 'tv':
-            _add_tv_item(item, creds.get(item['id']))
+            _add_tv_item(item, creds.get((mt, item['id'])))
 
     _add_page_items(data, 'tmdb_search', {'query': query})
     xbmcplugin.endOfDirectory(HANDLE)
@@ -1492,6 +1559,15 @@ def _dispatch(action, params):
 
 
 def router():
+    # With reuselanguageinvoker the module survives between invocations,
+    # so anything derived from sys.argv must be refreshed here
+    global HANDLE, BASE_URL
+    try:
+        HANDLE = int(sys.argv[1])
+    except (IndexError, ValueError):
+        HANDLE = -1
+    BASE_URL = sys.argv[0] if sys.argv else ''
+
     params = dict(parse_qsl(sys.argv[2][1:] if len(sys.argv) > 2 else ''))
     action = params.get('action')
     try:

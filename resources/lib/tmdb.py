@@ -8,6 +8,12 @@ IMG_BASE = 'https://image.tmdb.org/t/p/'
 
 TIMEOUT = (5, 15)  # connect, read (seconds)
 
+# Ako dlho platí uložená odpoveď
+TTL_LIST = 6 * 3600
+TTL_DETAIL = 24 * 3600
+TTL_GENRES = 7 * 24 * 3600
+TTL_TRANSLATIONS = 7 * 24 * 3600
+
 _session = requests.Session()
 
 # Poradie jazykov, z ktorých sa doplní popis, keď v nastavenom jazyku chýba:
@@ -50,9 +56,21 @@ class TMDBError(Exception):
 
 
 class TMDB:
-    def __init__(self, api_key, language='cs-CZ'):
+    def __init__(self, api_key, language='cs-CZ', cache=None):
         self.api_key = api_key
         self.language = language
+        self.cache = cache
+
+    def _cached(self, key, ttl, producer):
+        """Vráti hodnotu z cache, alebo ju vyrobí a uloží."""
+        if self.cache is not None:
+            hit = self.cache.get('{}:{}'.format(self.language, key), ttl)
+            if hit is not None:
+                return hit
+        data = producer()
+        if self.cache is not None:
+            self.cache.set('{}:{}'.format(self.language, key), data)
+        return data
 
     def _redact(self, text):
         """Bez API kľúča — chybové hlášky končia v kodi.logu."""
@@ -90,8 +108,18 @@ class TMDB:
         """GET zoznamového endpointu.
 
         Chýbajúce popisy a názvy v nezobraziteľnom písme doplní z náhradných
-        jazykov (posledný v poradí je vždy angličtina).
+        jazykov (posledný v poradí je vždy angličtina). Hotový výsledok sa
+        cachuje aj s doplnkami, takže sa neopakujú ani fallback requesty.
+        Vyhľadávanie sa necachuje, nech je vždy čerstvé.
         """
+        if '/search/' in path:
+            return self._get_list_fresh(path, params)
+        key = 'list:{}:{}'.format(
+            path, sorted((params or {}).items()))
+        return self._cached(key, TTL_LIST,
+                            lambda: self._get_list_fresh(path, params))
+
+    def _get_list_fresh(self, path, params=None):
         data = self._get(path, params)
         results = data.get('results') or []
         for lang in self._fallback_langs():
@@ -137,8 +165,9 @@ class TMDB:
 
     def _repair_item(self, item):
         try:
-            data = self._get('/{}/{}/translations'.format(
-                _media_type(item), item['id']))
+            path = '/{}/{}/translations'.format(_media_type(item), item['id'])
+            data = self._cached('tr:{}'.format(path), TTL_TRANSLATIONS,
+                                lambda: self._get(path))
         except (TMDBError, requests.RequestException):
             return
         by_iso = {}
@@ -208,9 +237,11 @@ class TMDB:
         return self._get('/movie/{}/credits'.format(movie_id))
 
     def movie_detail(self, movie_id):
-        data = self._get('/movie/{}'.format(movie_id),
-                         {'append_to_response': 'credits,translations'})
-        return self._fill_from_translations(data)
+        def fetch():
+            data = self._get('/movie/{}'.format(movie_id),
+                             {'append_to_response': 'credits,translations'})
+            return self._fill_from_translations(data)
+        return self._cached('movie:{}'.format(movie_id), TTL_DETAIL, fetch)
 
     # --- TV ---
 
@@ -232,11 +263,18 @@ class TMDB:
         return {'cast': creds.get('cast') or [], 'crew': crew}
 
     def tv_detail(self, tv_id):
-        data = self._get('/tv/{}'.format(tv_id),
-                         {'append_to_response': 'credits,translations'})
-        return self._fill_from_translations(data)
+        def fetch():
+            data = self._get('/tv/{}'.format(tv_id),
+                             {'append_to_response': 'credits,translations'})
+            return self._fill_from_translations(data)
+        return self._cached('tv:{}'.format(tv_id), TTL_DETAIL, fetch)
 
     def tv_season(self, tv_id, season_number):
+        key = 'season:{}:{}'.format(tv_id, season_number)
+        return self._cached(key, TTL_DETAIL,
+                            lambda: self._tv_season_fresh(tv_id, season_number))
+
+    def _tv_season_fresh(self, tv_id, season_number):
         path = '/tv/{}/season/{}'.format(tv_id, season_number)
         data = self._get(path)
         episodes = data.get('episodes') or []
@@ -270,10 +308,12 @@ class TMDB:
     # --- Genres ---
 
     def movie_genres(self):
-        return self._get('/genre/movie/list')
+        return self._cached('genres:movie', TTL_GENRES,
+                            lambda: self._get('/genre/movie/list'))
 
     def tv_genres(self):
-        return self._get('/genre/tv/list')
+        return self._cached('genres:tv', TTL_GENRES,
+                            lambda: self._get('/genre/tv/list'))
 
     # --- Discover ---
 

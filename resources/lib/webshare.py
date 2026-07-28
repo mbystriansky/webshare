@@ -29,7 +29,13 @@ _session.headers.update(HEADERS)
 
 
 class WebshareAPIError(Exception):
-    pass
+    """API failure. `network` distinguishes transport errors from the
+    server refusing the request; `code` is Webshare's error code."""
+
+    def __init__(self, message, code='', network=False):
+        super().__init__(message)
+        self.code = code
+        self.network = network
 
 
 def _safe_int(text, default=0):
@@ -49,17 +55,20 @@ class WebshareAPI:
             resp = _session.post(url, data=data, timeout=TIMEOUT)
             resp.raise_for_status()
         except requests.RequestException as e:
-            raise WebshareAPIError('Webshare: chyba siete ({})'.format(e))
+            raise WebshareAPIError('Webshare: chyba siete ({})'.format(e),
+                                   network=True)
         try:
             return ET.fromstring(resp.content)
         except ET.ParseError:
-            raise WebshareAPIError('Webshare: neplatná odpoveď servera')
+            raise WebshareAPIError('Webshare: neplatná odpoveď servera',
+                                   network=True)
 
     def _check_status(self, xml, context=''):
         status = xml.findtext('status', '')
         if status != 'OK':
             msg = xml.findtext('message', 'Unknown error')
-            raise WebshareAPIError('{}: {} ({})'.format(context, msg, status))
+            raise WebshareAPIError('{}: {} ({})'.format(context, msg, status),
+                                   code=xml.findtext('code', ''))
 
     def login(self, username, password):
         """Login to webshare.cz and obtain authentication token."""
