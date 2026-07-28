@@ -368,22 +368,80 @@ def prefetch_credits(results, media_type=None):
 
 
 def _credits_cast(credits_):
-    """Cast from distilled credits, in Kodi's setCast() format."""
+    """Cast from distilled credits, as plain dicts (JSON-safe)."""
     return [{'name': c['name'], 'role': c.get('character', ''),
              'thumbnail': TMDB.poster_url(c.get('profile_path'), 'w185'),
              'order': i}
             for i, c in enumerate((credits_ or {}).get('cast') or [])]
 
 
-def _apply_credits(li, credits_, info):
-    """Attach director + cast from prefetched credits to a list item."""
+def _names(value):
+    """A list of names from either a list or a comma-joined string."""
+    if isinstance(value, str):
+        return [s.strip() for s in value.split(',') if s.strip()]
+    return list(value or [])
+
+
+def _set_video_info(li, info, cast_=None):
+    """Fill the item's InfoTagVideo — the Kodi 20+ replacement for the
+    deprecated ListItem.setInfo()/setCast().
+
+    `info` is the same plain dict the plugin has always built (and stores
+    in stream_lists.json); `cast_` is a list of dicts with
+    name/role/thumbnail/order.
+    """
+    tag = li.getVideoInfoTag()
+    if info.get('mediatype'):
+        tag.setMediaType(info['mediatype'])
+    if info.get('title'):
+        tag.setTitle(str(info['title']))
+    if info.get('originaltitle'):
+        tag.setOriginalTitle(info['originaltitle'])
+    if info.get('plot'):
+        tag.setPlot(info['plot'])
+    if _int(info.get('year')):
+        tag.setYear(_int(info.get('year')))
+    if info.get('rating'):
+        tag.setRating(float(info['rating']))
+    if _int(info.get('votes')):
+        tag.setVotes(_int(info.get('votes')))
+    if info.get('duration'):
+        tag.setDuration(_int(info['duration']))
+    if info.get('genre'):
+        tag.setGenres(_names(info['genre']))
+    if info.get('director'):
+        tag.setDirectors(_names(info['director']))
+    if info.get('writer'):
+        tag.setWriters(_names(info['writer']))
+    if info.get('studio'):
+        tag.setStudios(_names(info['studio']))
+    if info.get('tvshowtitle'):
+        tag.setTvShowTitle(info['tvshowtitle'])
+    if info.get('season') is not None:
+        tag.setSeason(_int(info['season']))
+    if info.get('episode') is not None:
+        tag.setEpisode(_int(info['episode']))
+    if info.get('imdbnumber'):
+        tag.setIMDBNumber(info['imdbnumber'])
+    uniqueids = dict(info.get('uniqueids') or {})
+    if info.get('imdbnumber'):
+        uniqueids.setdefault('imdb', info['imdbnumber'])
+    if uniqueids:
+        tag.setUniqueIDs(uniqueids, 'tmdb' if 'tmdb' in uniqueids else '')
+    if cast_:
+        tag.setCast([
+            xbmc.Actor(c.get('name', ''), c.get('role', ''),
+                       _int(c.get('order'), i), c.get('thumbnail', ''))
+            for i, c in enumerate(cast_)])
+
+
+def _apply_credits(info, credits_):
+    """Merge director + cast from prefetched credits; returns cast list."""
     if not credits_:
-        return
+        return []
     if credits_.get('directors'):
         info['director'] = ', '.join(credits_['directors'])
-    cast = _credits_cast(credits_)
-    if cast:
-        li.setCast(cast)
+    return _credits_cast(credits_)
 
 
 def _usable_original(title):
@@ -438,8 +496,10 @@ def _movie_listitem(item, credits_=None):
             'mediatype': 'movie'}
     if year.isdigit():
         info['year'] = int(year)
-    _apply_credits(li, credits_, info)
-    li.setInfo('video', info)
+    if item.get('id'):
+        info['uniqueids'] = {'tmdb': str(item['id'])}
+    cast_ = _apply_credits(info, credits_)
+    _set_video_info(li, info, cast_)
 
     poster = TMDB.poster_url(item.get('poster_path'))
     fanart = TMDB.fanart_url(item.get('backdrop_path'))
@@ -468,8 +528,10 @@ def _tv_listitem(item, credits_=None):
             'mediatype': 'tvshow'}
     if year.isdigit():
         info['year'] = int(year)
-    _apply_credits(li, credits_, info)
-    li.setInfo('video', info)
+    if item.get('id'):
+        info['uniqueids'] = {'tmdb': str(item['id'])}
+    cast_ = _apply_credits(info, credits_)
+    _set_video_info(li, info, cast_)
 
     poster = TMDB.poster_url(item.get('poster_path'))
     fanart = TMDB.fanart_url(item.get('backdrop_path'))
@@ -504,6 +566,11 @@ def _enable_sort_methods():
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_TITLE)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_VIDEO_YEAR)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_VIDEO_RATING)
+
+
+def _notify_no_content():
+    xbmcgui.Dialog().notification('Webshare.cz', 'Žiadny obsah',
+                                  xbmcgui.NOTIFICATION_INFO)
 
 
 # TMDB discover sort options — maps UI labels to TMDB API sort_by values
@@ -560,6 +627,7 @@ def _add_page_items(data, action, extra_params=None):
     if page < total:
         li = xbmcgui.ListItem('Ďalšia strana ({}/{})'.format(page + 1, total))
         li.setArt({'icon': 'DefaultFolder.png'})
+        li.setProperty('SpecialSort', 'bottom')
         xbmcplugin.addDirectoryItem(
             HANDLE, build_url(action, page=page + 1, **params), li, isFolder=True)
 
@@ -636,6 +704,22 @@ def search_webshare_for_title(title, year='', season=None, episode=None):
     _render_stream_list(all_results, {}, {}, [])
 
 
+def _download_type():
+    """video_stream (default) or file_download per the user's setting."""
+    return ('file_download'
+            if ADDON.getSetting('download_type') == 'file_download'
+            else 'video_stream')
+
+
+def _stream_context_items(result):
+    """Context menu for a Webshare file row."""
+    return [
+        ('Prehrať v pôvodnej kvalite', 'RunPlugin({})'.format(
+            build_url('play_direct', ident=result['ident'],
+                      name=result['name'], dt='file_download'))),
+    ]
+
+
 def _add_stream_headers(link):
     """Append HTTP headers to a streaming URL for Kodi (pipe syntax)."""
     headers = (
@@ -646,13 +730,13 @@ def _add_stream_headers(link):
     return '{}|{}'.format(link, headers)
 
 
-def _play_direct(ident, name=''):
+def _play_direct(ident, name='', download_type=''):
     """Resolve webshare link and play directly via xbmc.Player (for dialog flows)."""
     ws = get_webshare()
     if ws is None:
         return
     try:
-        link = ws.get_file_link(ident)
+        link = ws.get_file_link(ident, download_type or _download_type())
     except WebshareAPIError as e:
         xbmcgui.Dialog().ok('Webshare.cz - Chyba', str(e))
         return
@@ -668,7 +752,7 @@ def play_webshare(ident, name=''):
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
     try:
-        link = ws.get_file_link(ident)
+        link = ws.get_file_link(ident, _download_type())
     except WebshareAPIError as e:
         xbmcgui.Dialog().ok('Webshare.cz - Chyba', str(e))
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
@@ -763,6 +847,8 @@ def show_trending(page=1):
         _fail_directory()
         return
     data = tmdb.trending(page=_int(page, 1))
+    if not data.get('results'):
+        _notify_no_content()
 
     xbmcplugin.setContent(HANDLE, 'videos')
     creds = prefetch_credits(data.get('results', []))
@@ -777,15 +863,29 @@ def show_trending(page=1):
     xbmcplugin.endOfDirectory(HANDLE)
 
 
+def _cinema_region():
+    """Region for now-playing listings: setting, else from the language."""
+    region = ADDON.getSetting('tmdb_region')
+    if region:
+        return region.upper()
+    lang = ADDON.getSetting('tmdb_language') or 'cs-CZ'
+    return lang.split('-')[-1].upper() if '-' in lang else 'CZ'
+
+
 def show_movies(category, page=1):
     tmdb = get_tmdb()
     if tmdb is None:
         _fail_directory()
         return
-    method = {'now_playing': tmdb.movies_now_playing,
-              'popular': tmdb.movies_popular,
-              'top_rated': tmdb.movies_top_rated}
-    data = method[category](page=_int(page, 1))
+    if category == 'now_playing':
+        data = tmdb.movies_now_playing(page=_int(page, 1),
+                                       region=_cinema_region())
+    else:
+        method = {'popular': tmdb.movies_popular,
+                  'top_rated': tmdb.movies_top_rated}
+        data = method[category](page=_int(page, 1))
+    if not data.get('results'):
+        _notify_no_content()
 
     xbmcplugin.setContent(HANDLE, 'movies')
     creds = prefetch_credits(data.get('results', []), 'movie')
@@ -804,6 +904,8 @@ def show_tv(category, page=1):
     method = {'popular': tmdb.tv_popular,
               'top_rated': tmdb.tv_top_rated}
     data = method[category](page=_int(page, 1))
+    if not data.get('results'):
+        _notify_no_content()
 
     xbmcplugin.setContent(HANDLE, 'tvshows')
     creds = prefetch_credits(data.get('results', []), 'tv')
@@ -837,7 +939,7 @@ def show_genres(media_type):
 
 
 def show_genre_list(media_type, genre_id, genre_name, page=1,
-                    sort_by='popularity.desc'):
+                    sort_by='popularity.desc', update_listing=False):
     tmdb = get_tmdb()
     if tmdb is None:
         _fail_directory()
@@ -849,14 +951,17 @@ def show_genre_list(media_type, genre_id, genre_name, page=1,
         data = tmdb.discover_movies(page=_int(page, 1), **discover_params)
     else:
         data = tmdb.discover_tv(page=_int(page, 1), **discover_params)
+    if not data.get('results'):
+        _notify_no_content()
 
     content = 'movies' if media_type == 'movie' else 'tvshows'
     xbmcplugin.setContent(HANDLE, content)
 
-    # Sort button at the top
+    # Sort button pinned to the top
     sort_li = xbmcgui.ListItem('[B]Zoradiť: {}[/B]'.format(
         _sort_label(media_type, sort_by)))
     sort_li.setArt({'icon': 'DefaultAddSource.png'})
+    sort_li.setProperty('SpecialSort', 'top')
     xbmcplugin.addDirectoryItem(
         HANDLE, build_url('genre_sort', media_type=media_type,
                           genre_id=genre_id, genre_name=genre_name,
@@ -873,7 +978,7 @@ def show_genre_list(media_type, genre_id, genre_name, page=1,
                     {'media_type': media_type, 'genre_id': genre_id,
                      'genre_name': genre_name, 'sort_by': sort_by})
     _enable_sort_methods()
-    xbmcplugin.endOfDirectory(HANDLE)
+    xbmcplugin.endOfDirectory(HANDLE, updateListing=update_listing)
 
 
 # ---------------------------------------------------------------------------
@@ -893,7 +998,8 @@ def show_years(media_type):
     xbmcplugin.endOfDirectory(HANDLE)
 
 
-def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
+def show_year_list(media_type, year, page=1, sort_by='popularity.desc',
+                   update_listing=False):
     """Show movies or TV shows from a specific year using TMDB discover."""
     tmdb = get_tmdb()
     if tmdb is None:
@@ -910,14 +1016,17 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
         data = tmdb.discover_movies(page=_int(page, 1), **discover_params)
     else:
         data = tmdb.discover_tv(page=_int(page, 1), **discover_params)
+    if not data.get('results'):
+        _notify_no_content()
 
     content = 'movies' if media_type == 'movie' else 'tvshows'
     xbmcplugin.setContent(HANDLE, content)
 
-    # Sort button at the top
+    # Sort button pinned to the top
     sort_li = xbmcgui.ListItem('[B]Zoradiť: {}[/B]'.format(
         _sort_label(media_type, sort_by)))
     sort_li.setArt({'icon': 'DefaultAddSource.png'})
+    sort_li.setProperty('SpecialSort', 'top')
     xbmcplugin.addDirectoryItem(
         HANDLE, build_url('year_sort', media_type=media_type,
                           year=year, current_sort=sort_by),
@@ -933,7 +1042,7 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc'):
                     {'media_type': media_type, 'year': year,
                      'sort_by': sort_by})
     _enable_sort_methods()
-    xbmcplugin.endOfDirectory(HANDLE)
+    xbmcplugin.endOfDirectory(HANDLE, updateListing=update_listing)
 
 
 # ---------------------------------------------------------------------------
@@ -1013,9 +1122,7 @@ def _info_listitem(label, browse_url, info, art, cast_):
     """
     li = xbmcgui.ListItem(label, path=browse_url)
     li.setIsFolder(True)
-    li.setInfo('video', dict(info, mediatype='tvshow'))
-    if cast_:
-        li.setCast(cast_)
+    _set_video_info(li, dict(info, mediatype='tvshow'), cast_)
     if art:
         li.setArt(art)
     return li
@@ -1036,12 +1143,10 @@ def _render_stream_list(results, info, art, cast_):
         # Parsed quality summary (1080p | BluRay | CZ dabing | 8.5 GB)
         # goes to label2; skins with a second line show it right away
         li.setLabel2(format_stream_label(r))
-        li.setInfo('video', dict(shared, title=r['name'],
-                                 size=r.get('size_bytes', 0)))
-        if cast_:
-            li.setCast(cast_)
+        _set_video_info(li, dict(shared, title=r['name']), cast_)
         li.setArt(dict(art, thumb=r['img'] or art.get('thumb', '')))
         li.setProperty('IsPlayable', 'true')
+        li.addContextMenuItems(_stream_context_items(r))
         url = build_url('play', ident=r['ident'], name=r['name'])
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
 
@@ -1105,6 +1210,11 @@ def _movie_info_dict(detail, title, year):
             'votes': str(detail.get('vote_count', 0)),
             'duration': runtime * 60 if runtime else 0,
             'mediatype': 'movie'}
+    if detail.get('id'):
+        info['uniqueids'] = {'tmdb': str(detail['id'])}
+    if detail.get('imdb_id'):
+        # Unlocks subtitle addons (OpenSubtitles keys off imdbnumber)
+        info['imdbnumber'] = detail['imdb_id']
     credits_ = detail.get('credits', {})
     directors = [c['name'] for c in credits_.get('crew', [])
                  if c.get('job') == 'Director']
@@ -1218,16 +1328,15 @@ def show_tv_detail(tmdb_id, title, year):
             label += ' ({} epizód)'.format(ep_count)
 
         li = xbmcgui.ListItem(label)
-        li.setInfo('video', {
+        _set_video_info(li, {
             'title': label,
             'plot': season.get('overview', '') or detail.get('overview', ''),
             'tvshowtitle': series_title,
             'season': snum,
             'mediatype': 'season',
-        })
-        show_cast = _tmdb_cast(detail.get('credits', {}).get('cast', []))
-        if show_cast:
-            li.setCast(show_cast)
+            'uniqueids': {'tmdb': str(tmdb_id)},
+            'imdbnumber': (detail.get('external_ids') or {}).get('imdb_id', ''),
+        }, _tmdb_cast(detail.get('credits', {}).get('cast', [])))
         sp = TMDB.poster_url(season.get('poster_path'))
         li.setArt({'thumb': sp or poster, 'poster': sp or poster, 'fanart': fanart})
         url = build_url('tv_season', tmdb_id=tmdb_id,
@@ -1237,6 +1346,7 @@ def show_tv_detail(tmdb_id, title, year):
 
     # Fallback: search entire series on webshare
     li = xbmcgui.ListItem('[B]Hľadať celý seriál na Webshare[/B]')
+    li.setProperty('SpecialSort', 'bottom')
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
     url = build_url('ws_search_title', title=series_title, year=year)
     xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
@@ -1275,10 +1385,7 @@ def show_tv_season(tmdb_id, season, title, original_title=''):
                         if c.get('job') == 'Director']
         if ep_directors:
             ep_info['director'] = ', '.join(ep_directors)
-        li.setInfo('video', ep_info)
-        guests = _tmdb_cast(ep.get('guest_stars', []))
-        if guests:
-            li.setCast(guests)
+        _set_video_info(li, ep_info, _tmdb_cast(ep.get('guest_stars', [])))
         still = TMDB.fanart_url(ep.get('still_path'), 'w780')
         if still:
             li.setArt({'thumb': still, 'fanart': still})
@@ -1394,6 +1501,7 @@ def do_search(query, page=1):
             xbmcgui.NOTIFICATION_INFO)
 
     _add_page_items(data, 'tmdb_search', {'query': query})
+    _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -1424,9 +1532,9 @@ def do_ws_search(query, offset=0):
         if not any(name.lower().endswith(ext) for ext in VIDEO_EXTENSIONS):
             continue
         li = xbmcgui.ListItem(name)
-        li.setInfo('video', {'title': name,
-                             'size': item.get('size_bytes', 0)})
+        _set_video_info(li, {'title': name})
         li.setProperty('IsPlayable', 'true')
+        li.addContextMenuItems(_stream_context_items(item))
         if item['img']:
             li.setArt({'thumb': item['img'], 'icon': item['img']})
         li.setLabel2(item['size_str'])
@@ -1439,6 +1547,7 @@ def do_ws_search(query, offset=0):
         # computed page count would only mislead
         li = xbmcgui.ListItem('Ďalšia strana')
         li.setArt({'icon': 'DefaultFolder.png'})
+        li.setProperty('SpecialSort', 'bottom')
         url = build_url('ws_search', query=query, offset=current_offset + limit)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
@@ -1463,6 +1572,7 @@ def show_history():
 
     if history:
         li = xbmcgui.ListItem('[I]Vymazať históriu[/I]')
+        li.setProperty('SpecialSort', 'bottom')
         li.setArt({'icon': 'DefaultIconInfo.png'})
         xbmcplugin.addDirectoryItem(HANDLE, build_url('clear_history'), li, isFolder=False)
 
@@ -1481,6 +1591,18 @@ def clear_history():
     if xbmcgui.Dialog().yesno('Webshare.cz', 'Vymazať celú históriu vyhľadávaní?'):
         save_history([])
         xbmc.executebuiltin('Container.Refresh')
+
+
+def clear_cache():
+    """Wipe cached TMDB data (settings button). History stays."""
+    Cache(TMDB_CACHE_DIR).prune(0)
+    for path in (CREDITS_CACHE_FILE, STREAMS_CACHE_FILE):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    xbmcgui.Dialog().notification('Webshare.cz', 'Cache vymazaná',
+                                  xbmcgui.NOTIFICATION_INFO)
 
 
 # ---------------------------------------------------------------------------
@@ -1520,7 +1642,7 @@ def _dispatch(action, params):
         if new_sort:
             show_genre_list(mt, params.get('genre_id', ''),
                             params.get('genre_name', ''),
-                            page=1, sort_by=new_sort)
+                            page=1, sort_by=new_sort, update_listing=True)
         else:
             _fail_directory()
     elif action == 'years_movies':
@@ -1537,7 +1659,7 @@ def _dispatch(action, params):
         new_sort = _pick_sort(mt, params.get('current_sort', 'popularity.desc'))
         if new_sort:
             show_year_list(mt, params.get('year', ''),
-                           page=1, sort_by=new_sort)
+                           page=1, sort_by=new_sort, update_listing=True)
         else:
             _fail_directory()
 
@@ -1588,6 +1710,9 @@ def _dispatch(action, params):
     # Playback
     elif action == 'play':
         play_webshare(params.get('ident', ''), params.get('name', ''))
+    elif action == 'play_direct':
+        _play_direct(params.get('ident', ''), params.get('name', ''),
+                     params.get('dt', ''))
     elif action == 'play_pick':
         play_pick(params.get('title', ''),
                   params.get('original_title', ''),
@@ -1601,6 +1726,10 @@ def _dispatch(action, params):
         remove_history(params.get('query', ''))
     elif action == 'clear_history':
         clear_history()
+
+    # Maintenance (reachable from settings)
+    elif action == 'clear_cache':
+        clear_cache()
 
     else:
         main_menu()

@@ -226,8 +226,11 @@ class TMDB:
         return self._get_list('/trending/{}/{}'.format(media_type, time_window),
                               {'page': page})
 
-    def movies_now_playing(self, page=1):
-        return self._get_list('/movie/now_playing', {'page': page, 'region': 'CZ'})
+    def movies_now_playing(self, page=1, region=''):
+        params = {'page': page}
+        if region:
+            params['region'] = region
+        return self._get_list('/movie/now_playing', params)
 
     def movies_popular(self, page=1):
         return self._get_list('/movie/popular', {'page': page})
@@ -266,8 +269,9 @@ class TMDB:
 
     def tv_detail(self, tv_id):
         def fetch():
-            data = self._get('/tv/{}'.format(tv_id),
-                             {'append_to_response': 'credits,translations'})
+            data = self._get(
+                '/tv/{}'.format(tv_id),
+                {'append_to_response': 'credits,translations,external_ids'})
             return self._fill_from_translations(data)
         return self._cached('tv:{}'.format(tv_id), TTL_DETAIL, fetch)
 
