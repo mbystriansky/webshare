@@ -52,6 +52,11 @@ _webshare = None
 _tmdb = None
 
 
+def L(string_id):
+    """Localized string from resources/language/*/strings.po."""
+    return ADDON.getLocalizedString(string_id)
+
+
 # ---------------------------------------------------------------------------
 # Singletons
 # ---------------------------------------------------------------------------
@@ -90,13 +95,7 @@ def get_tmdb():
     api_key = ADDON.getSetting('tmdb_api_key') or _read_api_key_from_file()
 
     if not api_key:
-        xbmcgui.Dialog().ok(
-            'Webshare.cz',
-            'Zadajte TMDB API kľúč v nastaveniach doplnku,\n'
-            'alebo ho uložte do súboru tmdb_api_key.txt\n'
-            '(napr. /sdcard/tmdb_api_key.txt na Androide).\n\n'
-            'Kľúč získate zadarmo na themoviedb.org.'
-        )
+        xbmcgui.Dialog().ok('Webshare.cz', L(30160))
         ADDON.openSettings()
         api_key = ADDON.getSetting('tmdb_api_key') or _read_api_key_from_file()
         if not api_key:
@@ -164,8 +163,7 @@ class _WebshareClient:
         except WebshareAPIError as e:
             if e.network:
                 raise
-            raise WebshareAPIError('Prihlásenie zlyhalo: {}'.format(e),
-                                   code='LOGIN_FAILED')
+            raise WebshareAPIError(L(30162).format(e), code='LOGIN_FAILED')
         try:
             _atomic_write_json(WS_TOKEN_FILE, {
                 'creds': _cred_hash(self.username, self.password),
@@ -199,10 +197,7 @@ def get_webshare():
     username = ADDON.getSetting('username')
     password = ADDON.getSetting('password')
     if not username or not password:
-        xbmcgui.Dialog().ok(
-            'Webshare.cz',
-            'Zadajte prihlasovacie údaje v nastaveniach doplnku.'
-        )
+        xbmcgui.Dialog().ok('Webshare.cz', L(30161))
         ADDON.openSettings()
         username = ADDON.getSetting('username')
         password = ADDON.getSetting('password')
@@ -457,15 +452,15 @@ def _search_context_items(title, original='', year='', season=None, episode=None
     if season is not None and episode is not None:
         extra = {'season': season, 'episode': episode}
     items = [
-        ('Prehrať – vybrať súbor', 'RunPlugin({})'.format(
+        (L(30140), 'RunPlugin({})'.format(
             build_url('play_pick', title=title, original_title=original,
                       year=year, **extra))),
-        ('Prehliadať súbory na Webshare', 'Container.Update({})'.format(
+        (L(30141), 'Container.Update({})'.format(
             browse_url or build_url('ws_search_title', title=title, year=year,
                                     **extra))),
     ]
     if original and original.lower() != title.lower():
-        items.append(('Prehliadať súbory (originál)', 'Container.Update({})'.format(
+        items.append((L(30142), 'Container.Update({})'.format(
             build_url('ws_search_title', title=original, year=year, **extra))))
     return items
 
@@ -569,48 +564,48 @@ def _enable_sort_methods():
 
 
 def _notify_no_content():
-    xbmcgui.Dialog().notification('Webshare.cz', 'Žiadny obsah',
+    xbmcgui.Dialog().notification('Webshare.cz', L(30165),
                                   xbmcgui.NOTIFICATION_INFO)
 
 
-# TMDB discover sort options — maps UI labels to TMDB API sort_by values
+# TMDB discover sort options — maps label string ids to TMDB sort_by values
 SORT_OPTIONS = [
-    ('Popularita', 'popularity.desc'),
-    ('Hodnotenie', 'vote_average.desc'),
-    ('Počet hodnotení', 'vote_count.desc'),
-    ('Rok (najnovšie)', 'primary_release_date.desc'),
-    ('Rok (najstaršie)', 'primary_release_date.asc'),
+    (30120, 'popularity.desc'),
+    (30121, 'vote_average.desc'),
+    (30122, 'vote_count.desc'),
+    (30123, 'primary_release_date.desc'),
+    (30124, 'primary_release_date.asc'),
 ]
 
 SORT_OPTIONS_TV = [
-    ('Popularita', 'popularity.desc'),
-    ('Hodnotenie', 'vote_average.desc'),
-    ('Počet hodnotení', 'vote_count.desc'),
-    ('Rok (najnovšie)', 'first_air_date.desc'),
-    ('Rok (najstaršie)', 'first_air_date.asc'),
+    (30120, 'popularity.desc'),
+    (30121, 'vote_average.desc'),
+    (30122, 'vote_count.desc'),
+    (30123, 'first_air_date.desc'),
+    (30124, 'first_air_date.asc'),
 ]
 
 
 def _sort_label(media_type, sort_by):
     """Return human-readable label for a TMDB sort_by value."""
     options = SORT_OPTIONS if media_type == 'movie' else SORT_OPTIONS_TV
-    for label, value in options:
+    for label_id, value in options:
         if value == sort_by:
-            return label
-    return 'Popularita'
+            return L(label_id)
+    return L(30120)
 
 
 def _pick_sort(media_type, current_sort='popularity.desc'):
     """Show a sort selection dialog. Returns TMDB sort_by value or None if cancelled."""
     options = SORT_OPTIONS if media_type == 'movie' else SORT_OPTIONS_TV
-    labels = [o[0] for o in options]
+    labels = [L(o[0]) for o in options]
     # pre-select current
     preselect = 0
     for i, o in enumerate(options):
         if o[1] == current_sort:
             preselect = i
             break
-    idx = xbmcgui.Dialog().select('Zoradiť podľa', labels, preselect=preselect)
+    idx = xbmcgui.Dialog().select(L(30125), labels, preselect=preselect)
     if idx < 0:
         return None
     return options[idx][1]
@@ -625,7 +620,7 @@ def _add_page_items(data, action, extra_params=None):
     total = min(_int(data.get('total_pages', 1), 1), MAX_TMDB_PAGE)
     params = extra_params or {}
     if page < total:
-        li = xbmcgui.ListItem('Ďalšia strana ({}/{})'.format(page + 1, total))
+        li = xbmcgui.ListItem(L(30181).format(page + 1, total))
         li.setArt({'icon': 'DefaultFolder.png'})
         li.setProperty('SpecialSort', 'bottom')
         xbmcplugin.addDirectoryItem(
@@ -696,7 +691,7 @@ def search_webshare_for_title(title, year='', season=None, episode=None):
         # A notification, not a modal dialog: Kodi is still holding its busy
         # dialog open while it waits for this listing.
         xbmcgui.Dialog().notification(
-            'Webshare.cz', 'Žiadne výsledky pre: {}'.format(title),
+            'Webshare.cz', L(30163).format(title),
             xbmcgui.NOTIFICATION_INFO)
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
@@ -714,7 +709,7 @@ def _download_type():
 def _stream_context_items(result):
     """Context menu for a Webshare file row."""
     return [
-        ('Prehrať v pôvodnej kvalite', 'RunPlugin({})'.format(
+        (L(30143), 'RunPlugin({})'.format(
             build_url('play_direct', ident=result['ident'],
                       name=result['name'], dt='file_download'))),
     ]
@@ -738,7 +733,7 @@ def _play_direct(ident, name='', download_type=''):
     try:
         link = ws.get_file_link(ident, download_type or _download_type())
     except WebshareAPIError as e:
-        xbmcgui.Dialog().ok('Webshare.cz - Chyba', str(e))
+        xbmcgui.Dialog().ok(L(30177), str(e))
         return
     stream_url = _add_stream_headers(link)
     li = xbmcgui.ListItem(name or 'Video', path=stream_url)
@@ -754,7 +749,7 @@ def play_webshare(ident, name=''):
     try:
         link = ws.get_file_link(ident, _download_type())
     except WebshareAPIError as e:
-        xbmcgui.Dialog().ok('Webshare.cz - Chyba', str(e))
+        xbmcgui.Dialog().ok(L(30177), str(e))
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
 
@@ -770,23 +765,21 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
     and Kodi is not waiting on a resolved URL.
     """
     progress = xbmcgui.DialogProgressBG()
-    progress.create('Webshare.cz', 'Hľadám súbory: {}'.format(title))
+    progress.create('Webshare.cz', L(30167).format(title))
     try:
         results = _ws_collect_results(title, year, season, episode)
         if results is None:
             return
         if not results and original_title \
                 and original_title.lower() != title.lower():
-            progress.update(50, message='Skúšam originálny názov: {}'.format(
-                original_title))
+            progress.update(50, message=L(30168).format(original_title))
             results = _ws_collect_results(original_title, year,
                                           season, episode) or []
     finally:
         progress.close()
 
     if not results:
-        xbmcgui.Dialog().ok('Webshare.cz',
-                            'Žiadne výsledky pre: {}'.format(title))
+        xbmcgui.Dialog().ok('Webshare.cz', L(30163).format(title))
         return
 
     choices = []
@@ -794,7 +787,7 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
         li = xbmcgui.ListItem(r['name'])
         li.setLabel2(format_stream_label(r))
         choices.append(li)
-    idx = xbmcgui.Dialog().select('Vyber súbor: {}'.format(title), choices,
+    idx = xbmcgui.Dialog().select(L(30169).format(title), choices,
                                   useDetails=True)
     if idx < 0:
         return
@@ -809,18 +802,18 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
 def main_menu():
     xbmcplugin.setContent(HANDLE, 'videos')
     items = [
-        ('[B]Hľadať[/B]', 'search_input', 'DefaultAddonsSearch.png'),
-        ('Trending', 'trending', 'DefaultRecentlyAddedMovies.png'),
-        ('Novinky v kinách', 'movies_now_playing', 'DefaultRecentlyAddedMovies.png'),
-        ('Populárne filmy', 'movies_popular', 'DefaultMovies.png'),
-        ('Top hodnotené filmy', 'movies_top_rated', 'DefaultMovies.png'),
-        ('Populárne seriály', 'tv_popular', 'DefaultTVShows.png'),
-        ('Top hodnotené seriály', 'tv_top_rated', 'DefaultTVShows.png'),
-        ('Žánre - filmy', 'genres_movies', 'DefaultGenre.png'),
-        ('Žánre - seriály', 'genres_tv', 'DefaultGenre.png'),
-        ('Podľa roku - filmy', 'years_movies', 'DefaultYear.png'),
-        ('Podľa roku - seriály', 'years_tv', 'DefaultYear.png'),
-        ('Webshare - priame hľadanie', 'ws_search_input', 'DefaultAddonsSearch.png'),
+        ('[B]{}[/B]'.format(L(30100)), 'search_input', 'DefaultAddonsSearch.png'),
+        (L(30101), 'trending', 'DefaultRecentlyAddedMovies.png'),
+        (L(30102), 'movies_now_playing', 'DefaultRecentlyAddedMovies.png'),
+        (L(30103), 'movies_popular', 'DefaultMovies.png'),
+        (L(30104), 'movies_top_rated', 'DefaultMovies.png'),
+        (L(30105), 'tv_popular', 'DefaultTVShows.png'),
+        (L(30106), 'tv_top_rated', 'DefaultTVShows.png'),
+        (L(30107), 'genres_movies', 'DefaultGenre.png'),
+        (L(30108), 'genres_tv', 'DefaultGenre.png'),
+        (L(30109), 'years_movies', 'DefaultYear.png'),
+        (L(30110), 'years_tv', 'DefaultYear.png'),
+        (L(30111), 'ws_search_input', 'DefaultAddonsSearch.png'),
     ]
     for label, action, icon in items:
         li = xbmcgui.ListItem(label)
@@ -830,7 +823,7 @@ def main_menu():
     # Search history
     history = load_history()
     if history:
-        li = xbmcgui.ListItem('[I]--- História ---[/I]')
+        li = xbmcgui.ListItem('[I]--- {} ---[/I]'.format(L(30112)))
         li.setArt({'icon': 'DefaultAddonsSearch.png'})
         xbmcplugin.addDirectoryItem(HANDLE, build_url('history'), li, isFolder=True)
 
@@ -958,8 +951,8 @@ def show_genre_list(media_type, genre_id, genre_name, page=1,
     xbmcplugin.setContent(HANDLE, content)
 
     # Sort button pinned to the top
-    sort_li = xbmcgui.ListItem('[B]Zoradiť: {}[/B]'.format(
-        _sort_label(media_type, sort_by)))
+    sort_li = xbmcgui.ListItem('[B]{}[/B]'.format(
+        L(30126).format(_sort_label(media_type, sort_by))))
     sort_li.setArt({'icon': 'DefaultAddSource.png'})
     sort_li.setProperty('SpecialSort', 'top')
     xbmcplugin.addDirectoryItem(
@@ -1023,8 +1016,8 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc',
     xbmcplugin.setContent(HANDLE, content)
 
     # Sort button pinned to the top
-    sort_li = xbmcgui.ListItem('[B]Zoradiť: {}[/B]'.format(
-        _sort_label(media_type, sort_by)))
+    sort_li = xbmcgui.ListItem('[B]{}[/B]'.format(
+        L(30126).format(_sort_label(media_type, sort_by))))
     sort_li.setArt({'icon': 'DefaultAddSource.png'})
     sort_li.setProperty('SpecialSort', 'top')
     xbmcplugin.addDirectoryItem(
@@ -1170,8 +1163,7 @@ def show_stream_list(key):
         # Only reachable from an info screen, which always stores this first,
         # so getting here means a stale bookmark or an evicted entry.
         xbmcgui.Dialog().notification(
-            'Webshare.cz', 'Otvorte film alebo epizódu znova',
-            xbmcgui.NOTIFICATION_INFO)
+            'Webshare.cz', L(30166), xbmcgui.NOTIFICATION_INFO)
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
@@ -1187,7 +1179,7 @@ def show_stream_list(key):
     if not results:
         xbmcgui.Dialog().notification(
             'Webshare.cz',
-            'Žiadne súbory pre: {}'.format(entry.get('title', '') or title),
+            L(30164).format(entry.get('title', '') or title),
             xbmcgui.NOTIFICATION_INFO)
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
@@ -1254,7 +1246,7 @@ def show_movie_info(tmdb_id, title, year):
         return
 
     progress = xbmcgui.DialogProgressBG()
-    progress.create('Webshare.cz', 'Načítavam: {}'.format(title))
+    progress.create('Webshare.cz', L(30170).format(title))
     try:
         detail = _quiet(_fetch_movie_detail, tmdb_id) or {}
     finally:
@@ -1294,7 +1286,7 @@ def show_movie_detail(tmdb_id, title, year):
 
     if not results:
         xbmcgui.Dialog().notification(
-            'Webshare.cz', 'Žiadne súbory pre: {}'.format(play_title),
+            'Webshare.cz', L(30164).format(play_title),
             xbmcgui.NOTIFICATION_INFO)
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
@@ -1322,10 +1314,10 @@ def show_tv_detail(tmdb_id, title, year):
         snum = season.get('season_number', 0)
         if snum == 0:
             continue  # skip "Specials"
-        label = 'Séria {}'.format(snum)
+        label = L(30182).format(snum)
         ep_count = season.get('episode_count', 0)
         if ep_count:
-            label += ' ({} epizód)'.format(ep_count)
+            label += ' ' + L(30183).format(ep_count)
 
         li = xbmcgui.ListItem(label)
         _set_video_info(li, {
@@ -1345,7 +1337,7 @@ def show_tv_detail(tmdb_id, title, year):
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
     # Fallback: search entire series on webshare
-    li = xbmcgui.ListItem('[B]Hľadať celý seriál na Webshare[/B]')
+    li = xbmcgui.ListItem('[B]{}[/B]'.format(L(30185)))
     li.setProperty('SpecialSort', 'bottom')
     li.setArt({'thumb': poster, 'poster': poster, 'fanart': fanart})
     url = build_url('ws_search_title', title=series_title, year=year)
@@ -1368,7 +1360,7 @@ def show_tv_season(tmdb_id, season, title, original_title=''):
 
     for ep in data.get('episodes', []):
         enum = ep.get('episode_number', 0)
-        ep_title = ep.get('name', 'Epizóda {}'.format(enum))
+        ep_title = ep.get('name', L(30184).format(enum))
         label = 'S{:02d}E{:02d} - {}'.format(snum, enum, ep_title)
 
         li = xbmcgui.ListItem(label)
@@ -1425,13 +1417,13 @@ def show_episode_info(tmdb_id, season, episode, title, show_title=''):
     tag = 'S{:02d}E{:02d}'.format(snum, enum)
     name = '{} {}'.format(show_title or title, tag)
     progress = xbmcgui.DialogProgressBG()
-    progress.create('Webshare.cz', 'Načítavam: {}'.format(name))
+    progress.create('Webshare.cz', L(30170).format(name))
     try:
         detail = _quiet(_fetch_episode, tmdb_id, snum, enum) or {}
     finally:
         progress.close()
 
-    ep_title = detail.get('name') or 'Epizóda {}'.format(enum)
+    ep_title = detail.get('name') or L(30184).format(enum)
     info = {'title': '{} - {}'.format(tag, ep_title),
             'plot': detail.get('overview', ''),
             'tvshowtitle': show_title or title,
@@ -1466,7 +1458,7 @@ def show_episode_info(tmdb_id, season, episode, title, show_title=''):
 # ---------------------------------------------------------------------------
 
 def search_input():
-    query = xbmcgui.Dialog().input('Hľadať filmy a seriály')
+    query = xbmcgui.Dialog().input(L(30171))
     if query:
         add_to_history(query)
         do_search(query)
@@ -1497,7 +1489,7 @@ def do_search(query, page=1):
 
     if not added:
         xbmcgui.Dialog().notification(
-            'Webshare.cz', 'Žiadne výsledky pre: {}'.format(query),
+            'Webshare.cz', L(30163).format(query),
             xbmcgui.NOTIFICATION_INFO)
 
     _add_page_items(data, 'tmdb_search', {'query': query})
@@ -1510,7 +1502,7 @@ def do_search(query, page=1):
 # ---------------------------------------------------------------------------
 
 def ws_search_input():
-    query = xbmcgui.Dialog().input('Hľadať na Webshare.cz')
+    query = xbmcgui.Dialog().input(L(30172))
     if query:
         do_ws_search(query)
     else:
@@ -1545,7 +1537,7 @@ def do_ws_search(query, offset=0):
     if current_offset + limit < total:
         # No page numbers: `total` counts non-video files too, so a
         # computed page count would only mislead
-        li = xbmcgui.ListItem('Ďalšia strana')
+        li = xbmcgui.ListItem(L(30180))
         li.setArt({'icon': 'DefaultFolder.png'})
         li.setProperty('SpecialSort', 'bottom')
         url = build_url('ws_search', query=query, offset=current_offset + limit)
@@ -1564,14 +1556,14 @@ def show_history():
     for query in history:
         li = xbmcgui.ListItem(query)
         li.setArt({'icon': 'DefaultAddonsSearch.png'})
-        cm = [('Odstrániť z histórie',
+        cm = [(L(30144),
                'RunPlugin({})'.format(build_url('remove_history', query=query)))]
         li.addContextMenuItems(cm)
         url = build_url('tmdb_search', query=query, page=1)
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
     if history:
-        li = xbmcgui.ListItem('[I]Vymazať históriu[/I]')
+        li = xbmcgui.ListItem('[I]{}[/I]'.format(L(30173)))
         li.setProperty('SpecialSort', 'bottom')
         li.setArt({'icon': 'DefaultIconInfo.png'})
         xbmcplugin.addDirectoryItem(HANDLE, build_url('clear_history'), li, isFolder=False)
@@ -1588,7 +1580,7 @@ def remove_history(query):
 
 
 def clear_history():
-    if xbmcgui.Dialog().yesno('Webshare.cz', 'Vymazať celú históriu vyhľadávaní?'):
+    if xbmcgui.Dialog().yesno('Webshare.cz', L(30174)):
         save_history([])
         xbmc.executebuiltin('Container.Refresh')
 
@@ -1601,7 +1593,7 @@ def clear_cache():
             os.remove(path)
         except OSError:
             pass
-    xbmcgui.Dialog().notification('Webshare.cz', 'Cache vymazaná',
+    xbmcgui.Dialog().notification('Webshare.cz', L(30175),
                                   xbmcgui.NOTIFICATION_INFO)
 
 
@@ -1758,8 +1750,7 @@ def router():
     except Exception:
         xbmc.log('plugin.video.webshare: unhandled error in action {}\n{}'
                  .format(action, traceback.format_exc()), xbmc.LOGERROR)
-        xbmcgui.Dialog().notification('Webshare.cz',
-                                      'Neočakávaná chyba (detaily v kodi.log)',
+        xbmcgui.Dialog().notification('Webshare.cz', L(30176),
                                       xbmcgui.NOTIFICATION_ERROR)
         _fail_directory()
 

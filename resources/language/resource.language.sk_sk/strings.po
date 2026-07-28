@@ -1,0 +1,284 @@
+# Kodi Media Center language file
+# Addon Name: Webshare.cz
+# Addon id: plugin.video.webshare
+# Addon Provider: mbystriansky
+msgid ""
+msgstr ""
+"Project-Id-Version: plugin.video.webshare\n"
+"Language: sk_SK\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2;\n"
+
+# Settings
+
+msgctxt "#30001"
+msgid "Webshare.cz account"
+msgstr "Webshare.cz účet"
+
+msgctxt "#30002"
+msgid "Username"
+msgstr "Používateľské meno"
+
+msgctxt "#30003"
+msgid "Password"
+msgstr "Heslo"
+
+msgctxt "#30004"
+msgid "TMDB"
+msgstr "TMDB"
+
+msgctxt "#30005"
+msgid "TMDB API key"
+msgstr "TMDB API kľúč"
+
+msgctxt "#30006"
+msgid "Metadata language"
+msgstr "Jazyk metadát"
+
+msgctxt "#30007"
+msgid "Slovak"
+msgstr "Slovenčina"
+
+msgctxt "#30008"
+msgid "Czech"
+msgstr "Čeština"
+
+msgctxt "#30009"
+msgid "English"
+msgstr "Angličtina"
+
+msgctxt "#30010"
+msgid "Playback"
+msgstr "Prehrávanie"
+
+msgctxt "#30011"
+msgid "Stream type"
+msgstr "Typ streamu"
+
+msgctxt "#30012"
+msgid "Stream (fast start)"
+msgstr "Stream (rýchly štart)"
+
+msgctxt "#30013"
+msgid "Original file (full quality)"
+msgstr "Originálny súbor (plná kvalita)"
+
+msgctxt "#30014"
+msgid "Region for cinema listings (country code, e.g. SK)"
+msgstr "Región pre Novinky v kinách (kód krajiny, napr. SK)"
+
+msgctxt "#30015"
+msgid "Maintenance"
+msgstr "Údržba"
+
+msgctxt "#30016"
+msgid "Clear cache"
+msgstr "Vymazať cache"
+
+# Main menu
+
+msgctxt "#30100"
+msgid "Search"
+msgstr "Hľadať"
+
+msgctxt "#30101"
+msgid "Trending"
+msgstr "Trending"
+
+msgctxt "#30102"
+msgid "In cinemas now"
+msgstr "Novinky v kinách"
+
+msgctxt "#30103"
+msgid "Popular movies"
+msgstr "Populárne filmy"
+
+msgctxt "#30104"
+msgid "Top rated movies"
+msgstr "Top hodnotené filmy"
+
+msgctxt "#30105"
+msgid "Popular TV shows"
+msgstr "Populárne seriály"
+
+msgctxt "#30106"
+msgid "Top rated TV shows"
+msgstr "Top hodnotené seriály"
+
+msgctxt "#30107"
+msgid "Genres - movies"
+msgstr "Žánre - filmy"
+
+msgctxt "#30108"
+msgid "Genres - TV shows"
+msgstr "Žánre - seriály"
+
+msgctxt "#30109"
+msgid "By year - movies"
+msgstr "Podľa roku - filmy"
+
+msgctxt "#30110"
+msgid "By year - TV shows"
+msgstr "Podľa roku - seriály"
+
+msgctxt "#30111"
+msgid "Webshare - direct search"
+msgstr "Webshare - priame hľadanie"
+
+msgctxt "#30112"
+msgid "History"
+msgstr "História"
+
+# Sorting
+
+msgctxt "#30120"
+msgid "Popularity"
+msgstr "Popularita"
+
+msgctxt "#30121"
+msgid "Rating"
+msgstr "Hodnotenie"
+
+msgctxt "#30122"
+msgid "Vote count"
+msgstr "Počet hodnotení"
+
+msgctxt "#30123"
+msgid "Year (newest)"
+msgstr "Rok (najnovšie)"
+
+msgctxt "#30124"
+msgid "Year (oldest)"
+msgstr "Rok (najstaršie)"
+
+msgctxt "#30125"
+msgid "Sort by"
+msgstr "Zoradiť podľa"
+
+msgctxt "#30126"
+msgid "Sort: {}"
+msgstr "Zoradiť: {}"
+
+# Context menu
+
+msgctxt "#30140"
+msgid "Play - choose a file"
+msgstr "Prehrať – vybrať súbor"
+
+msgctxt "#30141"
+msgid "Browse files on Webshare"
+msgstr "Prehliadať súbory na Webshare"
+
+msgctxt "#30142"
+msgid "Browse files (original title)"
+msgstr "Prehliadať súbory (originál)"
+
+msgctxt "#30143"
+msgid "Play in original quality"
+msgstr "Prehrať v pôvodnej kvalite"
+
+msgctxt "#30144"
+msgid "Remove from history"
+msgstr "Odstrániť z histórie"
+
+# Dialogs and notifications
+
+msgctxt "#30160"
+msgid "Enter your TMDB API key in the addon settings, or save it to a tmdb_api_key.txt file (e.g. /sdcard/tmdb_api_key.txt on Android).[CR][CR]You can get a key for free at themoviedb.org."
+msgstr "Zadajte TMDB API kľúč v nastaveniach doplnku, alebo ho uložte do súboru tmdb_api_key.txt (napr. /sdcard/tmdb_api_key.txt na Androide).[CR][CR]Kľúč získate zadarmo na themoviedb.org."
+
+msgctxt "#30161"
+msgid "Enter your credentials in the addon settings."
+msgstr "Zadajte prihlasovacie údaje v nastaveniach doplnku."
+
+msgctxt "#30162"
+msgid "Login failed: {}"
+msgstr "Prihlásenie zlyhalo: {}"
+
+msgctxt "#30163"
+msgid "No results for: {}"
+msgstr "Žiadne výsledky pre: {}"
+
+msgctxt "#30164"
+msgid "No files for: {}"
+msgstr "Žiadne súbory pre: {}"
+
+msgctxt "#30165"
+msgid "Nothing here"
+msgstr "Žiadny obsah"
+
+msgctxt "#30166"
+msgid "Open the movie or episode again"
+msgstr "Otvorte film alebo epizódu znova"
+
+msgctxt "#30167"
+msgid "Searching files: {}"
+msgstr "Hľadám súbory: {}"
+
+msgctxt "#30168"
+msgid "Trying the original title: {}"
+msgstr "Skúšam originálny názov: {}"
+
+msgctxt "#30169"
+msgid "Choose a file: {}"
+msgstr "Vyber súbor: {}"
+
+msgctxt "#30170"
+msgid "Loading: {}"
+msgstr "Načítavam: {}"
+
+msgctxt "#30171"
+msgid "Search movies and TV shows"
+msgstr "Hľadať filmy a seriály"
+
+msgctxt "#30172"
+msgid "Search Webshare.cz"
+msgstr "Hľadať na Webshare.cz"
+
+msgctxt "#30173"
+msgid "Clear history"
+msgstr "Vymazať históriu"
+
+msgctxt "#30174"
+msgid "Clear the whole search history?"
+msgstr "Vymazať celú históriu vyhľadávaní?"
+
+msgctxt "#30175"
+msgid "Cache cleared"
+msgstr "Cache vymazaná"
+
+msgctxt "#30176"
+msgid "Unexpected error (details in kodi.log)"
+msgstr "Neočakávaná chyba (detaily v kodi.log)"
+
+msgctxt "#30177"
+msgid "Webshare.cz - Error"
+msgstr "Webshare.cz - Chyba"
+
+# Listings
+
+msgctxt "#30180"
+msgid "Next page"
+msgstr "Ďalšia strana"
+
+msgctxt "#30181"
+msgid "Next page ({}/{})"
+msgstr "Ďalšia strana ({}/{})"
+
+msgctxt "#30182"
+msgid "Season {}"
+msgstr "Séria {}"
+
+msgctxt "#30183"
+msgid "({} episodes)"
+msgstr "({} epizód)"
+
+msgctxt "#30184"
+msgid "Episode {}"
+msgstr "Epizóda {}"
+
+msgctxt "#30185"
+msgid "Search the whole series on Webshare"
+msgstr "Hľadať celý seriál na Webshare"
