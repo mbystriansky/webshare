@@ -703,10 +703,33 @@ def search_webshare_for_title(title, original_title='', year='',
     _render_stream_list(all_results, {}, {}, [])
 
 
+WINDOW_OK_DIALOG = 12002
+
+
 def _cancel_playback():
-    """Tell Kodi no URL is coming, when it is waiting for one."""
-    if HANDLE >= 0:
-        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+    """Tell Kodi no URL is coming, when it is waiting for one.
+
+    Kodi answers a declined resolve with a modal "Playback failed" — seen on
+    Android, where it stays on screen until dismissed. Nothing here is a
+    failure the user needs to acknowledge: either they closed the file
+    picker themselves, or they have already been told what went wrong. So
+    wait for that dialog to appear and take it away again.
+    """
+    if HANDLE < 0:
+        return
+    xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+    monitor = xbmc.Monitor()
+    for _ in range(20):
+        if monitor.waitForAbort(0.1):
+            return
+        if xbmcgui.getCurrentWindowDialogId() == WINDOW_OK_DIALOG:
+            xbmc.executebuiltin('Dialog.Close(okdialog, true)')
+            return
+
+
+def _notify(message):
+    xbmcgui.Dialog().notification('Webshare.cz', message,
+                                  xbmcgui.NOTIFICATION_INFO)
 
 
 def _download_type():
@@ -754,13 +777,13 @@ def play_webshare(ident, name=''):
     """Resolve and play a webshare file (for IsPlayable items via setResolvedUrl)."""
     ws = get_webshare()
     if ws is None:
-        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+        _cancel_playback()
         return
     try:
         link = ws.get_file_link(ident, _download_type())
     except WebshareAPIError as e:
-        xbmcgui.Dialog().ok(L(30177), str(e))
-        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+        _notify(str(e))
+        _cancel_playback()
         return
 
     stream_url = _add_stream_headers(link)
@@ -792,8 +815,11 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
         progress.close()
 
     if not results:
+        # A notification rather than a modal: with playback pending the
+        # "Playback failed" dialog is on its way and two stacked modals
+        # would need two dismissals
         _cancel_playback()
-        xbmcgui.Dialog().ok('Webshare.cz', L(30163).format(title))
+        _notify(L(30163).format(title))
         return
 
     choices = []
