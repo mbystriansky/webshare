@@ -404,6 +404,10 @@ def _set_video_info(li, info, cast_=None):
         tag.setWriters(_names(info['writer']))
     if info.get('studio'):
         tag.setStudios(_names(info['studio']))
+    if info.get('premiered'):
+        tag.setPremiered(info['premiered'])
+    if info.get('tag'):
+        tag.setTags(_names(info['tag']))
     if info.get('tvshowtitle'):
         tag.setTvShowTitle(info['tvshowtitle'])
     if info.get('season') is not None:
@@ -615,6 +619,126 @@ def _add_page_items(data, action, extra_params=None):
         li.setProperty('SpecialSort', 'bottom')
         xbmcplugin.addDirectoryItem(
             HANDLE, build_url(action, page=page + 1, **params), li, isFolder=True)
+
+
+def _render_results(data, media_type, action, extra_params=None,
+                    filter_item=False):
+    """Body of a plain one-media-type TMDB listing: items, paging, sorting."""
+    results = data.get('results', [])
+    if not results:
+        _notify_no_content()
+    xbmcplugin.setContent(HANDLE, 'movies' if media_type == 'movie'
+                          else 'tvshows')
+    if filter_item:
+        _add_filter_item()
+    creds = prefetch_credits(results, media_type)
+    for item in results:
+        if media_type == 'movie':
+            _add_movie_item(item, creds.get(('movie', item['id'])))
+        else:
+            _add_tv_item(item, creds.get(('tv', item['id'])))
+    _add_page_items(data, action, extra_params)
+    _enable_sort_methods()
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+# ---------------------------------------------------------------------------
+# Release filter — hide films that are not out on disc / digitally yet
+# ---------------------------------------------------------------------------
+
+# setting value, label string id, TMDB release type (4 digital, 5 physical).
+# No "disc or digital" option: nearly every disc release is digital too, so
+# it would list the same films as the digital filter (verified on TMDB).
+RELEASE_FILTERS = (
+    ('all', 30192, ''),
+    ('disc', 30193, '5'),
+    ('digital', 30194, '4'),
+)
+
+TOP_RATED_MIN_VOTES = 300
+
+
+def _today():
+    import datetime
+    return datetime.date.today().isoformat()
+
+
+def _days_ago(days):
+    import datetime
+    return (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+
+
+def _release_filter():
+    """The active (value, label id, release type) tuple."""
+    value = ADDON.getSetting('release_filter') or 'all'
+    for entry in RELEASE_FILTERS:
+        if entry[0] == value:
+            return entry
+    return RELEASE_FILTERS[0]
+
+
+def _release_params():
+    """Discover params for the active filter, {} when it is off.
+
+    Without a region TMDB matches a release of that type anywhere in the
+    world, which is what matters for Webshare (a BD/WEB rip exists).
+    """
+    release_type = _release_filter()[2]
+    if not release_type:
+        return {}
+    return {'with_release_type': release_type, 'release_date.lte': _today()}
+
+
+def _filter_released(results, default_media_type=''):
+    """Apply the filter to a list TMDB cannot filter (trending, now playing,
+    search). Only movies are checked — TV shows have no release types — and
+    a film whose dates cannot be fetched stays in rather than vanishing."""
+    release_type = _release_filter()[2]
+    tmdb = get_tmdb()
+    if not release_type or tmdb is None:
+        return results
+    today = _today()
+
+    def released(item):
+        if item.get('media_type', default_media_type) != 'movie':
+            return True
+        try:
+            date = tmdb.release_dates(item['id']).get(release_type)
+        except Exception:  # network/API hiccup — listing must not break
+            return True
+        return bool(date) and date <= today
+
+    if not results:
+        return results
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(CREDITS_WORKERS,
+                                            len(results))) as pool:
+        keep = list(pool.map(released, results))
+    return [r for r, ok in zip(results, keep) if ok]
+
+
+def _add_filter_item():
+    """Pinned top entry showing the active filter; clicking changes it."""
+    li = xbmcgui.ListItem('[B]{}[/B]'.format(
+        L(30190).format(L(_release_filter()[1]))))
+    li.setArt({'icon': 'DefaultAddSource.png'})
+    li.setProperty('SpecialSort', 'top')
+    # Not a folder: Kodi runs us as a script, so a dialog is safe
+    xbmcplugin.addDirectoryItem(HANDLE, build_url('release_filter'), li,
+                                isFolder=False)
+
+
+def pick_release_filter():
+    if HANDLE >= 0:  # opened as a directory (stale favourite) — answer Kodi
+        _fail_directory()
+    current = _release_filter()[0]
+    values = [f[0] for f in RELEASE_FILTERS]
+    idx = xbmcgui.Dialog().select(L(30191), [L(f[1]) for f in RELEASE_FILTERS],
+                                  preselect=values.index(current))
+    if idx < 0 or values[idx] == current:
+        return
+    ADDON.setSetting('release_filter', values[idx])
+    xbmc.executebuiltin('Container.Refresh')
 
 
 # ---------------------------------------------------------------------------
@@ -856,10 +980,14 @@ def play_pick(title, original_title='', year='', season=None, episode=None):
 
 def main_menu():
     xbmcplugin.setContent(HANDLE, 'videos')
+    _add_filter_item()
     items = [
         ('[B]{}[/B]'.format(L(30100)), 'search_input', 'DefaultAddonsSearch.png'),
         (L(30101), 'trending', 'DefaultRecentlyAddedMovies.png'),
         (L(30102), 'movies_now_playing', 'DefaultRecentlyAddedMovies.png'),
+        (L(30195), 'new_disc', 'DefaultRecentlyAddedMovies.png'),
+        (L(30196), 'vod_services', 'DefaultNetwork.png'),
+        (L(30197), 'charts', 'DefaultMovieTitle.png'),
         (L(30103), 'movies_popular', 'DefaultMovies.png'),
         (L(30104), 'movies_top_rated', 'DefaultMovies.png'),
         (L(30105), 'tv_popular', 'DefaultTVShows.png'),
@@ -895,12 +1023,14 @@ def show_trending(page=1):
         _fail_directory()
         return
     data = tmdb.trending(page=_int(page, 1))
-    if not data.get('results'):
+    results = _filter_released(data.get('results', []))
+    if not results:
         _notify_no_content()
 
     xbmcplugin.setContent(HANDLE, 'videos')
-    creds = prefetch_credits(data.get('results', []))
-    for item in data.get('results', []):
+    _add_filter_item()
+    creds = prefetch_credits(results)
+    for item in results:
         mt = item.get('media_type', 'movie')
         if mt == 'movie':
             _add_movie_item(item, creds.get((mt, item['id'])))
@@ -925,23 +1055,27 @@ def show_movies(category, page=1):
     if tmdb is None:
         _fail_directory()
         return
+    release = _release_params()
     if category == 'now_playing':
         data = tmdb.movies_now_playing(page=_int(page, 1),
                                        region=_cinema_region())
+        # /movie/now_playing takes no release filter — check each film
+        data = dict(data, results=_filter_released(
+            data.get('results', []), 'movie'))
+    elif release:
+        # The plain list endpoints cannot filter; discover can, server-side
+        if category == 'popular':
+            params = {'sort_by': 'popularity.desc'}
+        else:
+            params = {'sort_by': 'vote_average.desc',
+                      'vote_count.gte': TOP_RATED_MIN_VOTES}
+        params.update(release)
+        data = tmdb.discover_movies(page=_int(page, 1), **params)
     else:
         method = {'popular': tmdb.movies_popular,
                   'top_rated': tmdb.movies_top_rated}
         data = method[category](page=_int(page, 1))
-    if not data.get('results'):
-        _notify_no_content()
-
-    xbmcplugin.setContent(HANDLE, 'movies')
-    creds = prefetch_credits(data.get('results', []), 'movie')
-    for item in data.get('results', []):
-        _add_movie_item(item, creds.get(('movie', item['id'])))
-    _add_page_items(data, 'movies_' + category)
-    _enable_sort_methods()
-    xbmcplugin.endOfDirectory(HANDLE)
+    _render_results(data, 'movie', 'movies_' + category, filter_item=True)
 
 
 def show_tv(category, page=1):
@@ -996,6 +1130,7 @@ def show_genre_list(media_type, genre_id, genre_name, page=1,
     if sort_by == 'vote_average.desc':
         discover_params['vote_count.gte'] = 50
     if media_type == 'movie':
+        discover_params.update(_release_params())
         data = tmdb.discover_movies(page=_int(page, 1), **discover_params)
     else:
         data = tmdb.discover_tv(page=_int(page, 1), **discover_params)
@@ -1015,6 +1150,8 @@ def show_genre_list(media_type, genre_id, genre_name, page=1,
                           genre_id=genre_id, genre_name=genre_name,
                           current_sort=sort_by),
         sort_li, isFolder=True)
+    if media_type == 'movie':
+        _add_filter_item()
 
     creds = prefetch_credits(data.get('results', []), media_type)
     for item in data.get('results', []):
@@ -1058,6 +1195,7 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc',
         discover_params['vote_count.gte'] = 50
     if media_type == 'movie':
         discover_params['primary_release_year'] = _int(year)
+        discover_params.update(_release_params())
     else:
         discover_params['first_air_date_year'] = _int(year)
     if media_type == 'movie':
@@ -1079,6 +1217,8 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc',
         HANDLE, build_url('year_sort', media_type=media_type,
                           year=year, current_sort=sort_by),
         sort_li, isFolder=True)
+    if media_type == 'movie':
+        _add_filter_item()
 
     creds = prefetch_credits(data.get('results', []), media_type)
     for item in data.get('results', []):
@@ -1091,6 +1231,216 @@ def show_year_list(media_type, year, page=1, sort_by='popularity.desc',
                      'sort_by': sort_by})
     _enable_sort_methods()
     xbmcplugin.endOfDirectory(HANDLE, updateListing=update_listing)
+
+
+# ---------------------------------------------------------------------------
+# New on disc / on streaming services
+# ---------------------------------------------------------------------------
+
+DISC_NEWS_DAYS = 90
+DISC_NEWS_MAX_AGE_DAYS = 2 * 365  # premiered within two years
+VOD_MOVIE_DAYS = 365   # "new" films on a service: premiered within a year
+VOD_TV_DAYS = 180      # series with an episode aired within half a year
+
+# TMDB provider ids, in menu order: Netflix, HBO Max, Disney+, Prime Video,
+# SkyShowtime, Apple TV+, Oneplay, Canal+. Ones missing in the region are
+# skipped, so the list adapts to the CZ/SK region.
+VOD_SERVICES = (8, 1899, 337, 119, 1773, 350, 2536, 381)
+
+
+def show_new_disc(page=1):
+    """Films that came out on DVD/Blu-ray (anywhere) in the last months."""
+    tmdb = get_tmdb()
+    if tmdb is None:
+        _fail_directory()
+        return
+    # The premiere floor keeps out anniversary re-releases of old films
+    params = {'sort_by': 'popularity.desc', 'with_release_type': '5',
+              'release_date.gte': _days_ago(DISC_NEWS_DAYS),
+              'release_date.lte': _today(),
+              'primary_release_date.gte': _days_ago(DISC_NEWS_MAX_AGE_DAYS)}
+    data = tmdb.discover_movies(page=_int(page, 1), **params)
+    _render_results(data, 'movie', 'new_disc')
+
+
+def show_vod_services():
+    tmdb = get_tmdb()
+    if tmdb is None:
+        _fail_directory()
+        return
+    region = _cinema_region()
+    available = {p.get('provider_id'): p for p in
+                 tmdb.watch_providers('movie', region).get('results') or []}
+    xbmcplugin.setContent(HANDLE, 'videos')
+    added = 0
+    for provider_id in VOD_SERVICES:
+        provider = available.get(provider_id)
+        if not provider:
+            continue
+        name = provider.get('provider_name', '')
+        logo = TMDB.poster_url(provider.get('logo_path'), 'w185')
+        li = xbmcgui.ListItem(name)
+        li.setArt({'icon': logo or 'DefaultNetwork.png', 'thumb': logo})
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url('vod_service', provider=provider_id, name=name),
+            li, isFolder=True)
+        added += 1
+    if not added:
+        _notify_no_content()
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def show_vod_service(provider, name):
+    xbmcplugin.setContent(HANDLE, 'videos')
+    for label_id, media_type, icon in ((30198, 'movie', 'DefaultMovies.png'),
+                                       (30199, 'tv', 'DefaultTVShows.png')):
+        li = xbmcgui.ListItem('{} – {}'.format(name, L(label_id)))
+        li.setArt({'icon': icon})
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url('vod_list', media_type=media_type,
+                              provider=provider, name=name),
+            li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def show_vod_list(media_type, provider, name, page=1):
+    """Recent titles included in a service's subscription."""
+    tmdb = get_tmdb()
+    if tmdb is None:
+        _fail_directory()
+        return
+    params = {'with_watch_providers': provider,
+              'watch_region': _cinema_region(),
+              'with_watch_monetization_types': 'flatrate|free|ads',
+              'sort_by': 'popularity.desc'}
+    if media_type == 'movie':
+        params['primary_release_date.gte'] = _days_ago(VOD_MOVIE_DAYS)
+        params['primary_release_date.lte'] = _today()
+        params.update(_release_params())
+        data = tmdb.discover_movies(page=_int(page, 1), **params)
+    else:
+        params['air_date.gte'] = _days_ago(VOD_TV_DAYS)
+        params['air_date.lte'] = _today()
+        data = tmdb.discover_tv(page=_int(page, 1), **params)
+    _render_results(data, media_type, 'vod_list',
+                    {'media_type': media_type, 'provider': provider,
+                     'name': name},
+                    filter_item=(media_type == 'movie'))
+
+
+# ---------------------------------------------------------------------------
+# Charts
+# ---------------------------------------------------------------------------
+
+# Czech/Slovak by original language, not origin country: TMDB tags old
+# Czechoslovak films inconsistently, the language catches them all
+CZSK = 'cs|sk'
+
+# label, media type, kind ('best' = by rating, 'popular' = by vote count),
+# original language
+CHARTS = (
+    (30200, 'movie', 'best', ''),
+    (30201, 'movie', 'popular', ''),
+    (30202, 'tv', 'best', ''),
+    (30203, 'tv', 'popular', ''),
+    (30204, 'movie', 'best', CZSK),
+    (30205, 'tv', 'best', CZSK),
+)
+
+
+def _chart_min_votes(media_type, lang, genre_id, decade):
+    """Vote floor for a by-rating chart, so few-vote titles do not top it.
+
+    Czech/Slovak titles get few TMDB votes, hence the low floor; the global
+    one is high enough to keep fresh premieres with inflated scores out.
+    """
+    if lang:
+        return 20 if media_type == 'movie' else 10
+    if genre_id or decade:
+        return 300 if media_type == 'movie' else 150
+    return 3000 if media_type == 'movie' else 500
+
+
+def show_charts():
+    xbmcplugin.setContent(HANDLE, 'videos')
+    for label_id, media_type, kind, lang in CHARTS:
+        li = xbmcgui.ListItem(L(label_id))
+        li.setArt({'icon': 'DefaultMovies.png' if media_type == 'movie'
+                   else 'DefaultTVShows.png'})
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url('chart', media_type=media_type, kind=kind,
+                              lang=lang), li, isFolder=True)
+    for label_id, action, media_type in ((30206, 'chart_genres', 'movie'),
+                                         (30207, 'chart_genres', 'tv'),
+                                         (30208, 'chart_decades', 'movie')):
+        li = xbmcgui.ListItem(L(label_id))
+        li.setArt({'icon': 'DefaultGenre.png' if action == 'chart_genres'
+                   else 'DefaultYear.png'})
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url(action, media_type=media_type), li,
+            isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def show_chart_genres(media_type):
+    tmdb = get_tmdb()
+    if tmdb is None:
+        _fail_directory()
+        return
+    data = (tmdb.movie_genres() if media_type == 'movie'
+            else tmdb.tv_genres())
+    xbmcplugin.setContent(HANDLE, 'videos')
+    for genre in data.get('genres', []):
+        li = xbmcgui.ListItem(genre['name'])
+        li.setArt({'icon': 'DefaultGenre.png'})
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url('chart', media_type=media_type, kind='best',
+                              genre_id=genre['id']), li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def show_chart_decades():
+    import datetime
+    xbmcplugin.setContent(HANDLE, 'videos')
+    for decade in range(datetime.date.today().year // 10 * 10, 1919, -10):
+        li = xbmcgui.ListItem('{} – {}'.format(decade, decade + 9))
+        li.setArt({'icon': 'DefaultYear.png'})
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url('chart', media_type='movie', kind='best',
+                              decade=decade), li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def show_chart(media_type, kind, lang='', genre_id='', decade='', page=1):
+    tmdb = get_tmdb()
+    if tmdb is None:
+        _fail_directory()
+        return
+    if kind == 'popular':
+        params = {'sort_by': 'vote_count.desc'}
+    else:
+        params = {'sort_by': 'vote_average.desc',
+                  'vote_count.gte': _chart_min_votes(media_type, lang,
+                                                     genre_id, decade)}
+    if lang:
+        params['with_original_language'] = lang
+    if genre_id:
+        params['with_genres'] = genre_id
+    date_key = ('primary_release_date' if media_type == 'movie'
+                else 'first_air_date')
+    if _int(decade):
+        params[date_key + '.gte'] = '{}-01-01'.format(_int(decade))
+        params[date_key + '.lte'] = '{}-12-31'.format(_int(decade) + 9)
+    if media_type == 'movie':
+        params.update(_release_params())
+        data = tmdb.discover_movies(page=_int(page, 1), **params)
+    else:
+        data = tmdb.discover_tv(page=_int(page, 1), **params)
+    _render_results(data, media_type, 'chart',
+                    {'media_type': media_type, 'kind': kind,
+                     'lang': lang, 'genre_id': genre_id,
+                     'decade': decade},
+                    filter_item=(media_type == 'movie'))
 
 
 # ---------------------------------------------------------------------------
@@ -1169,6 +1519,8 @@ def _movie_info_dict(detail, title, year):
             'votes': str(detail.get('vote_count', 0)),
             'duration': runtime * 60 if runtime else 0,
             'mediatype': 'movie'}
+    if len(detail.get('release_date') or '') == 10:
+        info['premiered'] = detail['release_date']
     if detail.get('id'):
         info['uniqueids'] = {'tmdb': str(detail['id'])}
     if detail.get('imdb_id'):
@@ -1201,6 +1553,33 @@ def _fetch_movie_detail(tmdb_id):
     return tmdb.movie_detail(tmdb_id) if tmdb is not None else {}
 
 
+def _fetch_release_dates(tmdb_id):
+    tmdb = get_tmdb()
+    return tmdb.release_dates(tmdb_id) if tmdb is not None else {}
+
+
+def _release_tags(dates):
+    """['VOD 3.11.26', 'DVD 22.12.26'] for the info screen's Tags row —
+    skins have no free-label row, and Tags is the one that shows any text
+    alongside director, genre and premiere. Kept terse (two-digit year):
+    Estuary cuts the row at about 26 characters.
+
+    Earliest release of each kind anywhere in the world, as TMDB has it;
+    a kind TMDB knows no date for is left out, and a future date is marked.
+    """
+    today = _today()
+    parts = []
+    for label_id, kind in ((30209, '4'), (30210, '5')):
+        date = (dates or {}).get(kind) or ''
+        if len(date) != 10:
+            continue
+        shown = '{}.{}.{}'.format(int(date[8:]), int(date[5:7]), date[2:4])
+        if date > today:
+            shown = L(30211).format(shown)
+        parts.append(L(label_id).format(shown))
+    return parts
+
+
 def show_movie_info(tmdb_id, title, year):
     """Open Kodi's info screen for a movie.
 
@@ -1219,10 +1598,14 @@ def show_movie_info(tmdb_id, title, year):
     progress.create('Webshare.cz', L(30170).format(title))
     try:
         detail = _quiet(_fetch_movie_detail, tmdb_id) or {}
+        dates = _quiet(_fetch_release_dates, tmdb_id) or {}
     finally:
         progress.close()
 
     info, art, cast_ = _movie_info_dict(detail, title, year)
+    tags = _release_tags(dates)
+    if tags:
+        info['tag'] = tags
     play_url = build_url(
         'play_pick', title=info['title'],
         original_title=_usable_original(detail.get('original_title')),
@@ -1405,11 +1788,13 @@ def do_search(query, page=1):
         return
 
     data = tmdb.search_multi(query, page=_int(page, 1))
+    results = _filter_released(data.get('results', []))
 
     xbmcplugin.setContent(HANDLE, 'videos')
+    _add_filter_item()
     added = 0
-    creds = prefetch_credits(data.get('results', []))
-    for item in data.get('results', []):
+    creds = prefetch_credits(results)
+    for item in results:
         mt = item.get('media_type', '')
         if mt == 'movie':
             _add_movie_item(item, creds.get((mt, item['id'])))
@@ -1568,6 +1953,29 @@ def _dispatch(action, params):
                             page=1, sort_by=new_sort, update_listing=True)
         else:
             _fail_directory()
+    elif action == 'release_filter':
+        pick_release_filter()
+    elif action == 'new_disc':
+        show_new_disc(params.get('page', 1))
+    elif action == 'vod_services':
+        show_vod_services()
+    elif action == 'vod_service':
+        show_vod_service(params.get('provider', ''), params.get('name', ''))
+    elif action == 'vod_list':
+        show_vod_list(params.get('media_type', 'movie'),
+                      params.get('provider', ''), params.get('name', ''),
+                      params.get('page', 1))
+    elif action == 'charts':
+        show_charts()
+    elif action == 'chart_genres':
+        show_chart_genres(params.get('media_type', 'movie'))
+    elif action == 'chart_decades':
+        show_chart_decades()
+    elif action == 'chart':
+        show_chart(params.get('media_type', 'movie'),
+                   params.get('kind', 'best'), params.get('lang', ''),
+                   params.get('genre_id', ''), params.get('decade', ''),
+                   params.get('page', 1))
     elif action == 'years_movies':
         show_years('movie')
     elif action == 'years_tv':

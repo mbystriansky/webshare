@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.webshare"
        name="Webshare.cz"
-       version="2.1.2"
+       version="2.2.0"
        provider-name="mbystriansky">
     <requires>
         <import addon="xbmc.python" version="3.0.1"/>
@@ -27,6 +27,6 @@
             <icon>resources/icon.png</icon>
             <fanart>resources/fanart.jpg</fanart>
         </assets>
-        <news>v2.1.0 — stabilita (timeouty, ošetrenie chýb siete), rýchlejšia navigácia (cache TMDB, uložený Webshare token), triedenie streamov podľa kvality (rozlíšenie/HDR/dabing), InfoTagVideo metadáta + IMDB id pre titulky, lokalizácia sk/en, nové nastavenia (typ streamu, región, vymazanie cache), ikona a fanart.</news>
+        <news>v2.2.0 — filter vydania (vyšlo na DVD/Blu-ray / digitálne) pre všetky filmové zoznamy, Novinky na DVD/Blu-ray, Novinky na VOD (Netflix, HBO Max, Disney+, Prime, SkyShowtime, Apple TV+, Oneplay, Canal+), Rebríčky (najlepšie, najobľúbenejšie, české a slovenské, podľa žánru a dekády), v detaile filmu dátum premiéry a digitálneho/DVD vydania, české filmy už nemajú anglické názvy.</news>
     </extension>
 </addon>

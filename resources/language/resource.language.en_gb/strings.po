@@ -293,3 +293,91 @@ msgstr ""
 msgctxt "#30189"
 msgid "720p"
 msgstr ""
+
+msgctxt "#30190"
+msgid "Release filter: {}"
+msgstr ""
+
+msgctxt "#30191"
+msgid "Release filter"
+msgstr ""
+
+msgctxt "#30192"
+msgid "All"
+msgstr ""
+
+msgctxt "#30193"
+msgid "Released on DVD/Blu-ray"
+msgstr ""
+
+msgctxt "#30194"
+msgid "Released digitally (VOD)"
+msgstr ""
+
+msgctxt "#30195"
+msgid "New on DVD/Blu-ray"
+msgstr ""
+
+msgctxt "#30196"
+msgid "New on streaming services"
+msgstr ""
+
+msgctxt "#30197"
+msgid "Charts"
+msgstr ""
+
+msgctxt "#30198"
+msgid "Movies"
+msgstr ""
+
+msgctxt "#30199"
+msgid "TV shows"
+msgstr ""
+
+msgctxt "#30200"
+msgid "Best movies"
+msgstr ""
+
+msgctxt "#30201"
+msgid "Most popular movies"
+msgstr ""
+
+msgctxt "#30202"
+msgid "Best TV shows"
+msgstr ""
+
+msgctxt "#30203"
+msgid "Most popular TV shows"
+msgstr ""
+
+msgctxt "#30204"
+msgid "Best Czech and Slovak movies"
+msgstr ""
+
+msgctxt "#30205"
+msgid "Best Czech and Slovak TV shows"
+msgstr ""
+
+msgctxt "#30206"
+msgid "Best movies by genre"
+msgstr ""
+
+msgctxt "#30207"
+msgid "Best TV shows by genre"
+msgstr ""
+
+msgctxt "#30208"
+msgid "Best movies by decade"
+msgstr ""
+
+msgctxt "#30209"
+msgid "VOD {}"
+msgstr ""
+
+msgctxt "#30210"
+msgid "DVD {}"
+msgstr ""
+
+msgctxt "#30211"
+msgid "from {}"
+msgstr ""

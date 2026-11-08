@@ -63,6 +63,20 @@
                         <heading>30014</heading>
                     </control>
                 </setting>
+                <setting id="release_filter" type="string" label="30191">
+                    <level>0</level>
+                    <default>all</default>
+                    <constraints>
+                        <options>
+                            <option label="30192">all</option>
+                            <option label="30193">disc</option>
+                            <option label="30194">digital</option>
+                        </options>
+                    </constraints>
+                    <control type="list" format="string">
+                        <heading>30191</heading>
+                    </control>
+                </setting>
             </group>
         </category>
         <category id="playback" label="30010">

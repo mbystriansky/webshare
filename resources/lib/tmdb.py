@@ -51,13 +51,15 @@ def _media_type(item):
     return 'tv' if _title_key(item) == 'name' else 'movie'
 
 
-def _title_needs_fallback(item, primary_iso):
+def _title_needs_fallback(item, native_isos):
     """True, keď titul treba skúsiť v náhradnom jazyku.
 
     Buď chýba, je v nezobraziteľnom písme, alebo sa rovná originálnemu
     názvu v inom jazyku — TMDB pri chýbajúcom preklade potichu vráti
     originál, takže 'Evil Dead Burn' pri sk-SK znamená "preklad nie je"
-    a treba skúsiť český titul."""
+    a treba skúsiť český titul. Originál v jazyku, ktorý používateľ číta
+    (`native_isos` — pri sk aj cs), je v poriadku: 'Pelíšky' nemá ostať
+    nahradené anglickým 'Cosy Dens'."""
     key = _title_key(item)
     title = item.get(key)
     if not title or is_unrenderable(title):
@@ -65,7 +67,7 @@ def _title_needs_fallback(item, primary_iso):
     orig = item.get('original_' + key)
     orig_lang = (item.get('original_language') or '').lower()
     return (bool(orig) and title == orig
-            and bool(orig_lang) and orig_lang != primary_iso)
+            and bool(orig_lang) and orig_lang not in native_isos)
 
 
 class TMDBError(Exception):
@@ -139,13 +141,21 @@ class TMDB:
     def _iso(self):
         return self.language.split('-')[0].lower()
 
+    def _native_isos(self):
+        """Jazyky, ktorých originálne názvy netreba prekladať: nastavený
+        jazyk a jeho náhrady okrem angličtiny (pri sk-SK teda sk a cs)."""
+        isos = {self._iso()}
+        isos.update(l.split('-')[0].lower() for l in self._fallback_langs()
+                    if not l.lower().startswith('en'))
+        return isos
+
     def _get_list_fresh(self, path, params=None):
         data = self._get(path, params)
         results = data.get('results') or []
         for lang in self._fallback_langs():
             no_plot = [r for r in results if not r.get('overview')]
             bad_title = [r for r in results
-                         if _title_needs_fallback(r, self._iso())]
+                         if _title_needs_fallback(r, self._native_isos())]
             if not no_plot and not bad_title:
                 break
             p = dict(params or {})
@@ -168,7 +178,7 @@ class TMDB:
 
     def _needs_repair(self, item):
         return (not item.get('overview')
-                or _title_needs_fallback(item, self._iso()))
+                or _title_needs_fallback(item, self._native_isos()))
 
     def _repair_items(self, results):
         """Per-item translation lookups for what the list-level fallback missed.
@@ -200,7 +210,7 @@ class TMDB:
 
         key = _title_key(item)
         need_plot = not item.get('overview')
-        need_title = _title_needs_fallback(item, self._iso())
+        need_title = _title_needs_fallback(item, self._native_isos())
         for lang in self._fallback_langs():
             tr = by_iso.get(lang.split('-')[0].lower()) or {}
             if need_plot and tr.get('overview'):
@@ -217,7 +227,7 @@ class TMDB:
         """Doplní chýbajúci popis a nezobraziteľný názov z prekladov v odpovedi."""
         key = _title_key(data)
         need_plot = not data.get('overview')
-        need_title = _title_needs_fallback(data, self._iso())
+        need_title = _title_needs_fallback(data, self._native_isos())
         if not need_plot and not need_title:
             return data
 
@@ -344,6 +354,35 @@ class TMDB:
     def discover_tv(self, page=1, **kwargs):
         kwargs['page'] = page
         return self._get_list('/discover/tv', kwargs)
+
+    # --- Release dates / streaming services ---
+
+    def release_dates(self, movie_id):
+        """{typ vydania: najskorší dátum 'YYYY-MM-DD'} naprieč krajinami.
+
+        Typy podľa TMDB: 1 premiéra, 2 limitované kino, 3 kino, 4 digitálne,
+        5 fyzické (DVD/Blu-ray), 6 TV. Cachujú sa dátumy, nie „už vyšlo“ —
+        to sa počíta voči dnešku až pri použití.
+        """
+        def fetch():
+            data = self._get('/movie/{}/release_dates'.format(movie_id))
+            earliest = {}
+            for country in data.get('results') or []:
+                for rel in country.get('release_dates') or []:
+                    kind = str(rel.get('type') or '')
+                    date = (rel.get('release_date') or '')[:10]
+                    if kind and date and (kind not in earliest
+                                          or date < earliest[kind]):
+                        earliest[kind] = date
+            return earliest
+        return self._cached('reldates:{}'.format(movie_id), TTL_DETAIL, fetch)
+
+    def watch_providers(self, media_type, region):
+        """Streamovacie služby dostupné v regióne (TMDB/JustWatch)."""
+        return self._cached(
+            'providers:{}:{}'.format(media_type, region), TTL_GENRES,
+            lambda: self._get('/watch/providers/{}'.format(media_type),
+                              {'watch_region': region}))
 
     # --- Helpers ---
 

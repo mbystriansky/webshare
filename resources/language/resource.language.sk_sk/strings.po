@@ -294,3 +294,91 @@ msgstr "1080p"
 msgctxt "#30189"
 msgid "720p"
 msgstr "720p"
+
+msgctxt "#30190"
+msgid "Release filter: {}"
+msgstr "Filter vydania: {}"
+
+msgctxt "#30191"
+msgid "Release filter"
+msgstr "Filter vydania"
+
+msgctxt "#30192"
+msgid "All"
+msgstr "Všetko"
+
+msgctxt "#30193"
+msgid "Released on DVD/Blu-ray"
+msgstr "Vyšlo na DVD/Blu-ray"
+
+msgctxt "#30194"
+msgid "Released digitally (VOD)"
+msgstr "Vyšlo digitálne (VOD)"
+
+msgctxt "#30195"
+msgid "New on DVD/Blu-ray"
+msgstr "Novinky na DVD/Blu-ray"
+
+msgctxt "#30196"
+msgid "New on streaming services"
+msgstr "Novinky na VOD"
+
+msgctxt "#30197"
+msgid "Charts"
+msgstr "Rebríčky"
+
+msgctxt "#30198"
+msgid "Movies"
+msgstr "Filmy"
+
+msgctxt "#30199"
+msgid "TV shows"
+msgstr "Seriály"
+
+msgctxt "#30200"
+msgid "Best movies"
+msgstr "Najlepšie filmy"
+
+msgctxt "#30201"
+msgid "Most popular movies"
+msgstr "Najobľúbenejšie filmy"
+
+msgctxt "#30202"
+msgid "Best TV shows"
+msgstr "Najlepšie seriály"
+
+msgctxt "#30203"
+msgid "Most popular TV shows"
+msgstr "Najobľúbenejšie seriály"
+
+msgctxt "#30204"
+msgid "Best Czech and Slovak movies"
+msgstr "Najlepšie české a slovenské filmy"
+
+msgctxt "#30205"
+msgid "Best Czech and Slovak TV shows"
+msgstr "Najlepšie české a slovenské seriály"
+
+msgctxt "#30206"
+msgid "Best movies by genre"
+msgstr "Najlepšie filmy podľa žánru"
+
+msgctxt "#30207"
+msgid "Best TV shows by genre"
+msgstr "Najlepšie seriály podľa žánru"
+
+msgctxt "#30208"
+msgid "Best movies by decade"
+msgstr "Najlepšie filmy podľa dekády"
+
+msgctxt "#30209"
+msgid "VOD {}"
+msgstr "VOD {}"
+
+msgctxt "#30210"
+msgid "DVD {}"
+msgstr "DVD {}"
+
+msgctxt "#30211"
+msgid "from {}"
+msgstr "od {}"
